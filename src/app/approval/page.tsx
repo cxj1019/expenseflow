@@ -1,5 +1,4 @@
 // src/app/approval/page.tsx
-
 'use client'
 
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
@@ -17,6 +16,7 @@ type ReportWithProfile = Report & {
 }
 
 export default function ApprovalPage() {
+  // 【已修正】移除了多余的等号
   const [profile, setProfile] = useState<Profile | null>(null)
   const [pendingReports, setPendingReports] = useState<ReportWithProfile[]>([])
   const [processedReports, setProcessedReports] = useState<ReportWithProfile[]>([])
@@ -24,34 +24,23 @@ export default function ApprovalPage() {
   const router = useRouter()
   const supabase = createClientComponentClient<Database>()
 
-  const fetchReports = async (userRole: string, userId: string) => {
-    const baseSelect = '*, profiles!user_id(*), expenses(*)'
-    
-    // 获取待处理报销单
-    const pendingQuery = supabase
-      .from('reports')
-      .select(baseSelect)
-      .neq('user_id', userId) 
-      .order('submitted_at', { ascending: true });
+  const fetchReports = async (userId: string) => {
+    // 1. 获取待处理报销单 (调用数据库函数)
+    const { data: pendingData, error: pendingError } = await supabase
+      .rpc('get_reports_for_approval')
+      .select('*, profiles!user_id(*), expenses(*)')
 
-    if (userRole === 'manager' || userRole === 'admin') {
-      pendingQuery.eq('status', 'submitted');
-    } else if (userRole === 'partner') {
-      pendingQuery.in('status', ['submitted', 'pending_partner_approval']);
-    }
-
-    const { data: pendingData, error: pendingError } = await pendingQuery;
     if (pendingError) {
       console.error('获取待审批列表失败:', pendingError);
     } else {
-      setPendingReports(pendingData as ReportWithProfile[]);
+      setPendingReports(pendingData as unknown as ReportWithProfile[]);
     }
 
-    // 获取已处理报销单
+    // 2. 获取已处理报销单
     const { data: processedData, error: processedError } = await supabase
       .from('reports')
-      .select(baseSelect)
-      .eq('approver_id', userId) // 只看自己处理过的
+      .select('*, profiles!user_id(*), expenses(*)')
+      .eq('approver_id', userId)
       .in('status', ['approved', 'rejected'])
       .order('approved_at', { ascending: false, nullsFirst: false })
       .limit(20);
@@ -59,7 +48,7 @@ export default function ApprovalPage() {
     if (processedError) {
       console.error('获取已审批列表失败:', processedError);
     } else {
-      setProcessedReports(processedData as ReportWithProfile[]);
+      setProcessedReports(processedData as unknown as ReportWithProfile[]);
     }
   };
 
@@ -69,20 +58,20 @@ export default function ApprovalPage() {
       if (!user) { router.push('/'); return; }
 
       const { data: profileData } = await supabase.from('profiles').select('*').eq('id', user.id).single();
-      if (!profileData || !['manager', 'partner', 'admin'].includes(profileData.role)) {
+      if (!profileData || !['manager', 'partner'].includes(profileData.role)) {
         setProfile(profileData);
         setLoading(false);
         return;
       }
       setProfile(profileData);
-      await fetchReports(profileData.role, user.id);
+      await fetchReports(user.id);
       setLoading(false);
     };
     checkRoleAndFetchData();
   }, [supabase, router]);
 
   if (loading) return <div className="flex justify-center items-center min-h-screen">正在加载...</div>;
-  if (!profile || !['manager', 'partner', 'admin'].includes(profile.role)) {
+  if (!profile || !['manager', 'partner'].includes(profile.role)) {
     return (
       <div className="flex flex-col justify-center items-center min-h-screen text-center">
         <h1 className="text-3xl font-bold text-red-600">访问被拒绝</h1>
@@ -112,7 +101,6 @@ export default function ApprovalPage() {
                     <div className="p-4 border rounded-lg hover:bg-gray-50 cursor-pointer">
                       <p className="font-bold text-lg">{report.title}</p>
                       <div className="text-sm text-gray-600 my-2">
-                        {/* 【已修改】移除角色显示 */}
                         <p>提交人: {report.profiles?.full_name || 'N/A'}</p>
                         <p>总金额: <span className="font-mono">¥{report.total_amount?.toFixed(2) || '0.00'}</span></p>
                         {report.status === 'pending_partner_approval' && <p className="text-orange-500 font-bold">需合伙人终审</p>}
