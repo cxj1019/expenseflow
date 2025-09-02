@@ -1,25 +1,26 @@
-// src/app/analytics/page.tsx
-
 'use client'
 
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import * as XLSX from 'xlsx' // 导入 Excel 库
+import * as XLSX from 'xlsx'
 import type { Database } from '@/types/database.types'
 
 type Profile = Database['public']['Tables']['profiles']['Row']
-// 定义一个更丰富的类型，包含报销单和审批人信息
+
+// 定义包含两级审批人信息的丰富类型
 type ExpenseWithDetails = Database['public']['Tables']['expenses']['Row'] & {
-  profiles: Pick<Profile, 'full_name'> | null // 员工信息
+  profiles: Pick<Profile, 'full_name'> | null
   reports: {
     title: string | null
     submitted_at: string | null
-    approved_at: string | null
-    customer_name: string | null // 【已移动】客户名称现在在 reports 对象下
-    bill_to_customer: boolean | null // 【已移动】是否向客户请款现在在 reports 对象下
-    approver: Pick<Profile, 'full_name'> | null // 审批人信息
+    customer_name: string | null
+    bill_to_customer: boolean | null
+    primary_approved_at: string | null
+    final_approved_at: string | null
+    primary_approver: Pick<Profile, 'full_name'> | null // 一级审批人
+    final_approver: Pick<Profile, 'full_name'> | null   // 二级审批人
   } | null
 }
 
@@ -28,8 +29,6 @@ export default function AnalyticsPage() {
   const [filteredExpenses, setFilteredExpenses] = useState<ExpenseWithDetails[]>([])
   const [loading, setLoading] = useState(true)
   const [isFetching, setIsFetching] = useState(false)
-
-  // 筛选条件的状态
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [customer, setCustomer] = useState('');
@@ -40,44 +39,52 @@ export default function AnalyticsPage() {
   useEffect(() => {
     const checkRole = async () => {
       const { data: { user } } = await supabase.auth.getUser()
-      if (!user) { router.push('/'); return; }
+      if (!user) {
+        router.push('/'); 
+        return; 
+      }
 
       const { data: profileData } = await supabase.from('profiles').select('*').eq('id', user.id).single()
-      if (!profileData || !['manager', 'partner'].includes(profileData.role)) {
-        setProfile(profileData);
-        setLoading(false);
-        return;
-      }
-      setProfile(profileData)
-      setLoading(false)
+      setProfile(profileData);
+      setLoading(false);
     }
     checkRole()
   }, [supabase, router])
 
   const handleFetchData = async () => {
     setIsFetching(true);
+    // 【已修正】更正了 final_approver 的外键名称
     let query = supabase
       .from('expenses')
-      .select('*, profiles(full_name), reports!inner(*, approver:profiles!reports_approver_id_fkey(full_name))')
+      .select(`
+        *,
+        profiles(full_name),
+        reports!inner(
+          title,
+          submitted_at,
+          customer_name,
+          bill_to_customer,
+          primary_approved_at,
+          final_approved_at,
+          primary_approver:profiles!reports_primary_approver_id_fkey(full_name),
+          final_approver:profiles!reports_approver_id_fkey(full_name)
+        )
+      `)
       .order('expense_date', { ascending: false });
 
-    if (startDate) {
-      query = query.gte('expense_date', startDate);
-    }
-    if (endDate) {
-      query = query.lte('expense_date', endDate);
-    }
+    if (startDate) { query = query.gte('expense_date', startDate); }
+    if (endDate) { query = query.lte('expense_date', endDate); }
     if (customer.trim() !== '') {
-      // 【已修正】现在筛选 reports 表中的 customer_name
       query = query.ilike('reports.customer_name', `%${customer.trim()}%`);
     }
 
     const { data, error } = await query;
 
     if (error) {
+      console.error('查询费用数据失败: ', error);
       alert('查询费用数据失败: ' + error.message);
     } else {
-      setFilteredExpenses(data as ExpenseWithDetails[]);
+      setFilteredExpenses(data as unknown as ExpenseWithDetails[]);
     }
     setIsFetching(false);
   };
@@ -88,7 +95,6 @@ export default function AnalyticsPage() {
       return;
     }
 
-    // 【已修正】从正确的 reports 对象中获取客户信息
     const dataToExport = filteredExpenses.map(exp => ({
       '费用日期': new Date(exp.expense_date!).toLocaleDateString(),
       '费用类型': exp.category,
@@ -98,20 +104,21 @@ export default function AnalyticsPage() {
       '是否向客户请款': exp.reports?.bill_to_customer ? '是' : '否',
       '报销单名称': exp.reports?.title || 'N/A',
       '提交日期': exp.reports?.submitted_at ? new Date(exp.reports.submitted_at).toLocaleDateString() : '-',
-      '审批通过日期': exp.reports?.approved_at ? new Date(exp.reports.approved_at).toLocaleDateString() : '-',
-      '审批人': exp.reports?.approver?.full_name || '-',
+      '一级审批时间': exp.reports?.primary_approved_at ? new Date(exp.reports.primary_approved_at).toLocaleDateString() : '-',
+      '一级审批人': exp.reports?.primary_approver?.full_name || '-',
+      '最终审批时间': exp.reports?.final_approved_at ? new Date(exp.reports.final_approved_at).toLocaleDateString() : '-',
+      '最终审批人': exp.reports?.final_approver?.full_name || '-',
       '费用ID': exp.id,
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(dataToExport);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, '费用明细');
-
     XLSX.writeFile(workbook, `费用报表_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   if (loading) return <div className="flex justify-center items-center min-h-screen">正在加载...</div>;
-  if (!profile || !['manager', 'partner'].includes(profile.role)) {
+  if (!profile || !['manager', 'partner', 'admin'].includes(profile.role)) {
     return (
       <div className="flex flex-col justify-center items-center min-h-screen text-center">
         <h1 className="text-3xl font-bold text-red-600">访问被拒绝</h1>
@@ -168,27 +175,28 @@ export default function AnalyticsPage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金额</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">员工</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">客户</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">向客户请款</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">报销单名称</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">提交日期</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">审批通过日期</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">审批人</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">一级审批时间</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">一级审批人</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">最终审批时间</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">最终审批人</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredExpenses.map(exp => (
                   <tr key={exp.id}>
-                    {/* 【已修正】从正确的 reports 对象中获取客户信息 */}
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{new Date(exp.expense_date!).toLocaleDateString()}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.category}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-mono">¥{exp.amount?.toFixed(2)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.profiles?.full_name}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.customer_name || '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.bill_to_customer ? '是' : '否'}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.title}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.submitted_at ? new Date(exp.reports.submitted_at).toLocaleDateString() : '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.approved_at ? new Date(exp.reports.approved_at).toLocaleDateString() : '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.approver?.full_name || '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.primary_approved_at ? new Date(exp.reports.primary_approved_at).toLocaleDateString() : '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.primary_approver?.full_name || '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.final_approved_at ? new Date(exp.reports.final_approved_at).toLocaleDateString() : '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.final_approver?.full_name || '-'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -200,3 +208,4 @@ export default function AnalyticsPage() {
     </div>
   )
 }
+
