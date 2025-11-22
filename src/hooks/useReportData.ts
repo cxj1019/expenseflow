@@ -56,8 +56,19 @@ export function useReportData() {
             const [profileRes, reportRes, expensesRes, customersRes] = await Promise.all([
                 // 获取当前用户的档案（角色等信息）
                 supabase.from('profiles').select('*').eq('id', authUser.id).single(),
-                // 获取报销单详情，并关联查询出提交人的姓名
-                supabase.from('reports').select('*, profiles(full_name), primary_approver:profiles!reports_primary_approver_id_fkey(full_name), final_approver:profiles!reports_final_approver_id_fkey(full_name)').eq('id', parseInt(reportId, 10)).single(),
+                
+                // 获取报销单详情，并关联查询出提交人、一级审批人、最终审批人的姓名
+                // 【关键修复】：显式指定所有关联的外键名称，解决 "more than one relationship" 歧义
+                supabase.from('reports')
+                    .select(`
+                        *, 
+                        profiles:profiles!reports_user_id_fkey(full_name), 
+                        primary_approver:profiles!reports_primary_approver_id_fkey(full_name), 
+                        final_approver:profiles!reports_approver_id_fkey(full_name)
+                    `)
+                    .eq('id', parseInt(reportId, 10))
+                    .single(),
+
                 // 获取该报销单下的所有费用条目
                 supabase.from('expenses').select('*').eq('report_id', parseInt(reportId, 10)).order('expense_date', { ascending: true }),
                 // 获取所有客户列表，用于表单下拉选择

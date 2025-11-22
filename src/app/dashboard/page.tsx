@@ -2,12 +2,15 @@
 
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useRouter } from 'next/navigation'
-import { useEffect, useState, FormEvent, useCallback } from 'react'
+import { useEffect, useState, FormEvent, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import type { Database } from '@/types/database.types'
 
 type Report = Database['public']['Tables']['reports']['Row']
 type Profile = Database['public']['Tables']['profiles']['Row']
+
+// 筛选类型定义
+type TimeFilter = 'all' | 'week' | 'month' | '3months' | '6months' | 'year' | 'custom';
 
 export default function Dashboard() {
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -15,15 +18,19 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null);
   const [newReportTitle, setNewReportTitle] = useState('')
-  const [isProcessing, setIsProcessing] = useState(false); // 用于创建报销单时的加载状态
+  const [isProcessing, setIsProcessing] = useState(false);
   
-  // 新增：通知状态
+  // --- 新增：筛选相关的状态 ---
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  // ---------------------------
+  
   const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
   const router = useRouter()
   const supabase = createClientComponentClient<Database>()
 
-  // 新增：显示通知的函数
   const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
       setNotification({ message, type });
       setTimeout(() => setNotification(null), 5000);
@@ -68,6 +75,57 @@ export default function Dashboard() {
     getUserAndReports()
   }, [supabase, router, fetchReports])
 
+  // --- 新增：前端筛选过滤逻辑 ---
+  const filteredReports = useMemo(() => {
+    if (timeFilter === 'all') return reports;
+
+    const now = new Date();
+    let cutoffDate: Date | null = null;
+
+    // 设置截止时间（对于非自定义选项）
+    switch (timeFilter) {
+      case 'week':
+        cutoffDate = new Date(now.setDate(now.getDate() - 7));
+        break;
+      case 'month':
+        cutoffDate = new Date(now.setMonth(now.getMonth() - 1));
+        break;
+      case '3months':
+        cutoffDate = new Date(now.setMonth(now.getMonth() - 3));
+        break;
+      case '6months':
+        cutoffDate = new Date(now.setMonth(now.getMonth() - 6));
+        break;
+      case 'year':
+        cutoffDate = new Date(now.setFullYear(now.getFullYear() - 1));
+        break;
+      case 'custom':
+        // 自定义筛选逻辑在下方单独处理
+        break;
+    }
+
+    return reports.filter(report => {
+      if (!report.created_at) return false;
+      const reportDate = new Date(report.created_at);
+
+      if (timeFilter === 'custom') {
+        // 检查自定义开始和结束日期
+        if (customStartDate && reportDate < new Date(customStartDate)) return false;
+        // 结束日期加一天以包含当天（因为日期选择器通常是 00:00:00）
+        if (customEndDate) {
+            const endDate = new Date(customEndDate);
+            endDate.setDate(endDate.getDate() + 1); 
+            if (reportDate >= endDate) return false;
+        }
+        return true;
+      }
+
+      // 标准时间段筛选
+      return cutoffDate ? reportDate >= cutoffDate : true;
+    });
+  }, [reports, timeFilter, customStartDate, customEndDate]);
+  // ----------------------------------
+
   const handleLogout = async () => {
     await supabase.auth.signOut()
     router.push('/')
@@ -85,10 +143,8 @@ export default function Dashboard() {
       .single()
 
     if (error) {
-      // 修改：使用新的通知系统替代 alert
       showNotification('创建报销单失败: ' + error.message, 'error');
     } else if (data) {
-      // 成功后直接跳转
       router.push(`/dashboard/report/${(data as any).id}`)
     }
     setIsProcessing(false);
@@ -132,7 +188,6 @@ export default function Dashboard() {
       </header>
       <main className="container mx-auto p-6">
         
-        {/* 新增：通知组件 */}
         {notification && (
             <div className="mb-6">
                 <div 
@@ -159,26 +214,76 @@ export default function Dashboard() {
             </button>
           </form>
         </div>
+
         <div className="bg-white p-6 rounded-lg shadow-md">
-          <h2 className="text-2xl font-bold mb-4">我的报销单</h2>
-          {reports.length > 0 ? (
+          <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+            <h2 className="text-2xl font-bold">我的报销单</h2>
+            
+            {/* --- 新增：筛选控件区域 --- */}
+            <div className="flex flex-wrap items-center gap-2">
+                <select 
+                    value={timeFilter} 
+                    onChange={(e) => setTimeFilter(e.target.value as TimeFilter)}
+                    className="border rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                    <option value="all">全部时间</option>
+                    <option value="week">最近1周</option>
+                    <option value="month">最近1个月</option>
+                    <option value="3months">最近3个月</option>
+                    <option value="6months">最近半年</option>
+                    <option value="year">最近1年</option>
+                    <option value="custom">自定义...</option>
+                </select>
+
+                {/* 自定义日期输入框 (仅在选择自定义时显示) */}
+                {timeFilter === 'custom' && (
+                    <div className="flex items-center gap-2 animate-fade-in">
+                        <input 
+                            type="date" 
+                            value={customStartDate} 
+                            onChange={(e) => setCustomStartDate(e.target.value)}
+                            className="border rounded-md px-2 py-1 text-sm"
+                            aria-label="开始日期"
+                        />
+                        <span className="text-gray-500">-</span>
+                        <input 
+                            type="date" 
+                            value={customEndDate} 
+                            onChange={(e) => setCustomEndDate(e.target.value)}
+                            className="border rounded-md px-2 py-1 text-sm"
+                            aria-label="结束日期"
+                        />
+                    </div>
+                )}
+            </div>
+            {/* ------------------------- */}
+          </div>
+
+          {filteredReports.length > 0 ? (
             <ul className="space-y-4">
-              {reports.map((report) => (
+              {filteredReports.map((report) => (
                 <Link key={report.id} href={`/dashboard/report/${report.id}`}>
-                  <li className="p-4 border rounded-lg flex justify-between items-center hover:bg-gray-50 cursor-pointer">
+                  <li className="p-4 border rounded-lg flex justify-between items-center hover:bg-gray-50 cursor-pointer transition-colors">
                     <div>
                       <p className="font-bold text-lg">{report.title}</p>
                       <p className="text-sm text-gray-500">创建于: {new Date(report.created_at!).toLocaleString()}</p>
                     </div>
-                    <span className={`px-3 py-1 text-sm font-semibold rounded-full ${ report.status === 'approved' ? 'bg-green-100 text-green-800' : report.status === 'rejected' ? 'bg-red-100 text-red-800' : report.status === 'submitted' || report.status === 'pending_partner_approval' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'}`}>
-                      {report.status}
+                    <span className={`px-3 py-1 text-sm font-semibold rounded-full ${ 
+                        report.status === 'approved' ? 'bg-green-100 text-green-800' : 
+                        report.status === 'rejected' ? 'bg-red-100 text-red-800' : 
+                        report.status === 'submitted' || report.status === 'pending_partner_approval' ? 'bg-yellow-100 text-yellow-800' : 
+                        'bg-gray-100 text-gray-800'
+                    }`}>
+                      {report.status === 'pending_partner_approval' ? '等待合伙人审批' : report.status}
                     </span>
                   </li>
                 </Link>
               ))}
             </ul>
           ) : (
-            <p className="text-gray-500">您还没有创建任何报销单。</p>
+            <div className="text-center py-10 text-gray-500 bg-gray-50 rounded-lg border border-dashed">
+                {reports.length === 0 ? "您还没有创建任何报销单。" : "该时间段内没有报销单。"}
+            </div>
           )}
         </div>
       </main>
