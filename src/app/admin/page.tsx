@@ -1,250 +1,338 @@
-// src/app/admin/page.tsx
+//src\app\admin\page.tsx
+
 'use client'
 
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import type { Database } from '@/types/database.types'
+import { useEffect, useState, FormEvent, ChangeEvent, useCallback } from 'react'
+import type { Database, TablesInsert, TablesUpdate } from '@/types/database.types'
 
+// --- 类型定义 ---
 type Profile = Database['public']['Tables']['profiles']['Row']
 type Customer = Database['public']['Tables']['customers']['Row']
-type CostCenter = Database['public']['Tables']['cost_centers']['Row']
 
-// 管理实体类型
+// FIX: 临时的 CostCenter 类型定义
+// 这里的定义是为了防止页面报错，等你数据库添加了 cost_centers 表后，
+// 请取消注释下方的真实类型引用，并删除这个临时接口。
+type CostCenter = { id: number; name: string; created_at: string | null; };
+// type CostCenter = Database['public']['Tables']['cost_centers']['Row']
+
+// 管理实体联合类型
 type ManageableEntity = Profile | Customer | CostCenter;
 type ModalType = 'user' | 'customer' | 'cost_center';
 
 export default function AdminPage() {
-  const [adminProfile, setAdminProfile] = useState<Profile | null>(null)
-  const [users, setUsers] = useState<Profile[]>([])
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [costCenters, setCostCenters] = useState<CostCenter[]>([])
-  const [loading, setLoading] = useState(true)
+  // --- 状态管理 ---
+  const [adminProfile, setAdminProfile] = useState<Profile | null>(null);
+  const [users, setUsers] = useState<Profile[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // --- 模态框状态 ---
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalType, setModalType] = useState<ModalType | null>(null);
+  const [editingEntity, setEditingEntity] = useState<ManageableEntity | null>(null);
   
-  // 模态框状态
-  const [modalOpen, setModalOpen] = useState(false)
-  const [modalType, setModalType] = useState<ModalType | null>(null)
-  const [editingEntity, setEditingEntity] = useState<ManageableEntity | null>(null)
-  const [formData, setFormData] = useState<Partial<ManageableEntity>>({})
+  // 为不同类型的实体创建独立的、类型安全的表单状态
+  const [userFormData, setUserFormData] = useState<Partial<Profile>>({});
+  const [customerFormData, setCustomerFormData] = useState<Partial<Customer>>({});
 
-  const router = useRouter()
-  const supabase = createClientComponentClient<Database>()
+  // 通知状态
+  const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  const fetchData = async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { router.push('/'); return; }
+  const router = useRouter();
+  const supabase = createClientComponentClient<Database>();
+  
+  // --- 通知处理函数 ---
+  const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
+      setNotification({ message, type });
+      setTimeout(() => setNotification(null), 5000);
+  };
 
-    const { data: profileData } = await supabase.from('profiles').select('*').eq('id', user.id).single()
-    if (profileData?.role !== 'admin') {
-      setAdminProfile(profileData); setLoading(false); return;
+  // --- 数据获取 ---
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      router.push('/');
+      return;
     }
-    setAdminProfile(profileData)
 
-    const [usersRes, customersRes, costCentersRes] = await Promise.all([
+    const { data: profileData, error: profileError } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+    if (profileError || !profileData) {
+      router.push('/dashboard');
+      return;
+    }
+    if (profileData.role !== 'admin') {
+      router.push('/dashboard');
+      return;
+    }
+    setAdminProfile(profileData);
+
+    const [usersRes, customersRes] = await Promise.all([
       supabase.from('profiles').select('*').order('full_name'),
       supabase.from('customers').select('*').order('name'),
-      supabase.from('cost_centers').select('*').order('name'),
-    ])
+    ]);
+
+    if (usersRes.data) setUsers(usersRes.data);
+    if (customersRes.data) setCustomers(customersRes.data);
     
-    setUsers(usersRes.data || [])
-    setCustomers(customersRes.data || [])
-    setCostCenters(costCentersRes.data || [])
-    setLoading(false)
-  }
-
+    setLoading(false);
+  }, [router, supabase]);
+  
   useEffect(() => {
-    fetchData()
-  }, [])
+    fetchData();
+  }, [fetchData]);
 
+  // --- 模态框控制 ---
   const openModal = (type: ModalType, entity: ManageableEntity | null = null) => {
-    setModalType(type)
-    setEditingEntity(entity)
-    setFormData(entity || {})
-    setModalOpen(true)
-  }
+    setModalType(type);
+    setEditingEntity(entity);
+    
+    if (type === 'user' && entity && 'role' in entity) {
+      setUserFormData(entity);
+    } else if (type === 'customer' && entity && 'name' in entity) {
+      setCustomerFormData(entity);
+    } else if (type === 'customer' && !entity) {
+      // 新增客户时清空表单
+      setCustomerFormData({});
+    }
+    
+    setModalOpen(true);
+  };
 
   const closeModal = () => {
-    setModalOpen(false)
-    setModalType(null)
-    setEditingEntity(null)
-    setFormData({})
-  }
+    setModalOpen(false);
+    setModalType(null);
+    setEditingEntity(null);
+    setUserFormData({});
+    setCustomerFormData({});
+  };
 
-  const handleFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+  // --- 表单处理 ---
+  const handleFormChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }))
-  }
+    if (modalType === 'user') {
+        setUserFormData((prev) => ({ ...prev, [name]: value }));
+    } else if (modalType === 'customer') {
+        setCustomerFormData((prev) => ({...prev, [name]: value }));
+    }
+  };
 
-  const handleFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleFormSubmit = async (e: FormEvent) => {
+    e.preventDefault();
     if (!modalType) return;
-
+  
+    setIsProcessing(true);
     let error;
-
-    // 【已修正】使用 switch 语句来处理不同的表操作，确保类型安全
-    switch (modalType) {
-      case 'user': {
-        if (editingEntity) {
-          const { id, email, ...updateData } = formData as Profile; // Profile 没有 created_at
-          const { error: updateError } = await supabase.from('profiles').update(updateData).eq('id', (editingEntity as Profile).id);
-          error = updateError;
-        }
-        break;
-      }
-      case 'customer': {
-        const { id, created_at, ...updateData } = formData as Customer;
-        if (editingEntity) {
-          const { error: updateError } = await supabase.from('customers').update(updateData).eq('id', (editingEntity as Customer).id);
-          error = updateError;
-        } else {
-          const { error: insertError } = await supabase.from('customers').insert(updateData);
-          error = insertError;
-        }
-        break;
-      }
-      case 'cost_center': {
-        const { id, created_at, ...updateData } = formData as CostCenter;
-        if (editingEntity) {
-          const { error: updateError } = await supabase.from('cost_centers').update(updateData).eq('id', (editingEntity as CostCenter).id);
-          error = updateError;
-        } else {
-          const { error: insertError } = await supabase.from('cost_centers').insert(updateData);
-          error = insertError;
-        }
-        break;
-      }
-      default:
-        alert('未知的操作类型');
-        return;
-    }
-
-    if (error) {
-      alert(`操作失败: ${error.message}`)
-    } else {
-      alert('操作成功！')
-      closeModal()
-      await fetchData() // 重新获取数据刷新列表
-    }
-  }
-
-  const handleDelete = async (type: ModalType, id: string | number) => {
-    if (!window.confirm(`确定要删除这个${type}吗？`)) return;
-    
-    let error;
-
-    // 【已修正】使用 switch 语句来处理不同的删除操作
-    switch (type) {
+  
+    try {
+      switch (modalType) {
         case 'user':
-            alert('警告：这将只删除用户的 Profile 信息，不会删除其登录账户。如需彻底删除，请在 Supabase 后台操作。');
-            const { error: userError } = await supabase.from('profiles').delete().eq('id', id as string);
-            error = userError;
-            break;
+          // 类型守卫：确保编辑的是 User
+          if (editingEntity && 'role' in editingEntity) {
+            const updates: TablesUpdate<'profiles'> = {};
+            
+            // 仅添加变更的字段
+            if (userFormData.full_name !== editingEntity.full_name) updates.full_name = userFormData.full_name;
+            if (userFormData.department !== editingEntity.department) updates.department = userFormData.department;
+            if (userFormData.phone !== editingEntity.phone) updates.phone = userFormData.phone;
+            if (userFormData.role !== editingEntity.role) updates.role = userFormData.role;
+            
+            if (Object.keys(updates).length > 0) {
+              const { error: updateError } = await supabase
+                .from('profiles')
+                .update(updates)
+                .eq('id', editingEntity.id);
+              error = updateError;
+            } else {
+              showNotification('未作任何修改。', 'success');
+              closeModal();
+              setIsProcessing(false);
+              return;
+            }
+          }
+          break;
+  
         case 'customer':
-            const { error: customerError } = await supabase.from('customers').delete().eq('id', id as number);
-            error = customerError;
-            break;
+          if (editingEntity && 'name' in editingEntity) {
+            // --- 编辑现有客户 ---
+            if (customerFormData.name && customerFormData.name !== editingEntity.name) {
+               const updates: TablesUpdate<'customers'> = { name: customerFormData.name };
+               const { error: updateError } = await supabase
+                .from('customers')
+                .update(updates)
+                .eq('id', editingEntity.id);
+              error = updateError;
+            } else {
+              showNotification('未作任何修改。', 'success');
+              closeModal();
+              setIsProcessing(false);
+              return;
+            }
+          } else {
+            // --- 新增客户 ---
+            const newName = customerFormData.name?.trim();
+            if (!newName) {
+                showNotification('客户名称不能为空。', 'error');
+                setIsProcessing(false);
+                return;
+            }
+            
+            // 使用 TablesInsert 确保类型安全，不再需要 as any
+            const insertData: TablesInsert<'customers'> = { name: newName };
+            const { error: insertError } = await supabase
+                .from('customers')
+                .insert(insertData);
+            error = insertError;
+          }
+          break;
+  
         case 'cost_center':
-            const { error: costCenterError } = await supabase.from('cost_centers').delete().eq('id', id as number);
-            error = costCenterError;
-            break;
-        default:
-            alert('未知的操作类型');
-            return;
-    }
+          console.log('Submitting for cost_center (Feature Pending)');
+          showNotification('成本中心功能开发中', 'success');
+          setIsProcessing(false);
+          closeModal();
+          return;
+      }
+  
+      if (error) throw error;
+      
+      showNotification('保存成功！');
+      closeModal();
+      await fetchData();
 
-    if (error) {
-      alert(`删除失败: ${error.message}`)
-    } else {
-      alert('删除成功！')
-      await fetchData()
+    } catch (err: unknown) {
+      console.error('Submit error:', err);
+      if (err instanceof Error) {
+        showNotification(`操作失败: ${err.message}`, 'error');
+      } else {
+        showNotification('操作失败: 发生未知错误', 'error');
+      }
+    } finally {
+        setIsProcessing(false);
     }
+  };
+
+  if (loading) {
+    return <div className="flex justify-center items-center min-h-screen">正在加载管理后台...</div>;
   }
 
-  if (loading) return <div className="flex justify-center items-center min-h-screen">正在加载...</div>
-  if (adminProfile?.role !== 'admin') {
-    return (
-      <div className="flex flex-col justify-center items-center min-h-screen text-center">
-        <h1 className="text-3xl font-bold text-red-600">访问被拒绝</h1>
-        <p className="text-gray-600 mt-2">您没有管理员权限。</p>
-        <Link href="/dashboard" className="mt-6 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">返回仪表盘</Link>
-      </div>
-    )
+  if (!adminProfile) {
+    return <div className="flex justify-center items-center min-h-screen">您没有权限访问此页面。</div>;
   }
 
   return (
-    <>
-      <div className="min-h-screen bg-gray-100">
-        <header className="bg-white shadow">
-          <nav className="container mx-auto px-6 py-4 flex justify-between items-center">
-            <h1 className="text-xl font-bold text-gray-800">系统管理后台</h1>
-            <Link href="/dashboard" className="text-blue-600 hover:underline">返回仪表盘</Link>
-          </nav>
-        </header>
-        <main className="container mx-auto p-6 space-y-8">
-          {/* 用户管理 */}
-          <section className="bg-white p-6 rounded-lg shadow-md">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-2xl font-bold">用户管理</h2>
-              <p className="text-sm text-gray-500">注意：此处无法创建或删除登录账户</p>
+    <div className="min-h-screen bg-gray-100 p-8">
+      <h1 className="text-3xl font-bold mb-8">系统管理</h1>
+        
+      {notification && (
+        <div className="mb-6">
+            <div className={`p-4 rounded-md text-sm ${ notification.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'}`}>
+                {notification.message}
             </div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50"><tr><th className="p-2 text-left font-medium text-gray-500">姓名</th><th className="p-2 text-left font-medium text-gray-500">邮箱</th><th className="p-2 text-left font-medium text-gray-500">部门</th><th className="p-2 text-left font-medium text-gray-500">电话</th><th className="p-2 text-left font-medium text-gray-500">角色</th><th className="p-2"></th></tr></thead>
-                <tbody>
-                  {users.map(user => (
-                    <tr key={user.id} className="border-b">
-                      <td className="p-2">{user.full_name}</td><td className="p-2">{user.email}</td><td className="p-2">{user.department}</td><td className="p-2">{user.phone}</td><td className="p-2">{user.role}</td>
-                      <td className="p-2 flex justify-end space-x-2"><button onClick={() => openModal('user', user)} className="text-blue-500 hover:underline">编辑</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
+        </div>
+      )}
 
-          {/* 客户与成本中心管理 */}
-          <div className="grid md:grid-cols-2 gap-8">
-            <section className="bg-white p-6 rounded-lg shadow-md">
-              <div className="flex justify-between items-center mb-4"><h2 className="text-2xl font-bold">客户管理</h2><button onClick={() => openModal('customer')} className="bg-blue-600 text-white px-3 py-1 rounded-md text-sm hover:bg-blue-700">新增</button></div>
-              <ul>{customers.map(c => <li key={c.id} className="flex justify-between items-center py-2 border-b"><p>{c.name}</p><div className="space-x-4"><button onClick={() => openModal('customer', c)} className="text-blue-500 hover:underline text-sm">编辑</button><button onClick={() => handleDelete('customer', c.id)} className="text-red-500 hover:underline text-sm">删除</button></div></li>)}</ul>
-            </section>
-            <section className="bg-white p-6 rounded-lg shadow-md">
-              <div className="flex justify-between items-center mb-4"><h2 className="text-2xl font-bold">成本中心管理</h2><button onClick={() => openModal('cost_center')} className="bg-blue-600 text-white px-3 py-1 rounded-md text-sm hover:bg-blue-700">新增</button></div>
-              <ul>{costCenters.map(cc => <li key={cc.id} className="flex justify-between items-center py-2 border-b"><p>{cc.name}</p><div className="space-x-4"><button onClick={() => openModal('cost_center', cc)} className="text-blue-500 hover:underline text-sm">编辑</button><button onClick={() => handleDelete('cost_center', cc.id)} className="text-red-500 hover:underline text-sm">删除</button></div></li>)}</ul>
-            </section>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+        {/* 用户管理卡片 */}
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">用户列表</h2>
+          <div className="max-h-[400px] overflow-y-auto">
+            <ul className="space-y-2">
+                {users.map(user => (
+                <li key={user.id} className="flex justify-between items-center p-2 rounded hover:bg-gray-50">
+                    <div>
+                        <span className="block font-medium">{user.full_name}</span>
+                        <span className="text-xs text-gray-500">{user.role} | {user.department || '无部门'}</span>
+                    </div>
+                    <button onClick={() => openModal('user', user)} className="text-blue-600 hover:underline text-sm">编辑</button>
+                </li>
+                ))}
+            </ul>
           </div>
-        </main>
-      </div>
+        </div>
 
-      {/* 通用模态框 */}
+        {/* 客户管理卡片 */}
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">客户列表</h2>
+          <button onClick={() => openModal('customer', null)} className="w-full mb-4 px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 text-sm font-medium">
+            + 新增客户
+          </button>
+          <div className="max-h-[400px] overflow-y-auto">
+            <ul className="space-y-2">
+                {customers.map(customer => (
+                <li key={customer.id} className="flex justify-between items-center p-2 rounded hover:bg-gray-50">
+                    <span>{customer.name}</span>
+                    <button onClick={() => openModal('customer', customer)} className="text-blue-600 hover:underline text-sm">编辑</button>
+                </li>
+                ))}
+            </ul>
+          </div>
+        </div>
+
+        {/* 成本中心管理卡片 (占位) */}
+        <div className="bg-white p-6 rounded-lg shadow opacity-75">
+          <h2 className="text-xl font-semibold mb-4">成本中心</h2>
+          <div className="flex items-center justify-center h-32 bg-gray-50 rounded border border-dashed border-gray-300">
+            <p className="text-gray-500 text-sm">此功能正在开发中...</p>
+          </div>
+        </div>
+      </div>
+      
+      {/* 模态框 */}
       {modalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
           <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-md">
-            <h3 className="text-xl font-bold mb-6">
-              {editingEntity ? '编辑' : '新增'} 
-              {modalType === 'user' ? '用户' : modalType === 'customer' ? '客户' : '成本中心'}
-            </h3>
-            <form onSubmit={handleFormSubmit} className="space-y-4">
+            <form onSubmit={handleFormSubmit}>
+              <h2 className="text-2xl font-bold mb-6">
+                {editingEntity ? '编辑' : '新增'} {modalType === 'user' ? '用户' : modalType === 'customer' ? '客户' : '成本中心'}
+              </h2>
+              
               {modalType === 'user' && (
                 <>
-                  <div><label className="block text-sm font-medium text-gray-700">姓名</label><input name="full_name" value={(formData as Profile).full_name || ''} onChange={handleFormChange} className="w-full p-2 border rounded mt-1"/></div>
-                  <div><label className="block text-sm font-medium text-gray-700">部门</label><input name="department" value={(formData as Profile).department || ''} onChange={handleFormChange} className="w-full p-2 border rounded mt-1"/></div>
-                  <div><label className="block text-sm font-medium text-gray-700">电话</label><input name="phone" value={(formData as Profile).phone || ''} onChange={handleFormChange} className="w-full p-2 border rounded mt-1"/></div>
-                  <div><label className="block text-sm font-medium text-gray-700">角色</label><select name="role" value={(formData as Profile).role || 'employee'} onChange={handleFormChange} className="w-full p-2 border rounded mt-1"><option value="employee">employee</option><option value="manager">manager</option><option value="partner">partner</option><option value="admin">admin</option></select></div>
-                </> 
+                  <div className="mb-4">
+                    <label className="block text-gray-700 text-sm font-bold mb-2">姓名</label>
+                    <input name="full_name" value={userFormData.full_name || ''} onChange={handleFormChange} className="w-full px-3 py-2 border rounded focus:outline-none focus:border-blue-500" />
+                  </div>
+                   <div className="mb-4">
+                    <label className="block text-gray-700 text-sm font-bold mb-2">部门</label>
+                    <input name="department" value={userFormData.department || ''} onChange={handleFormChange} className="w-full px-3 py-2 border rounded focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <div className="mb-4">
+                    <label className="block text-gray-700 text-sm font-bold mb-2">电话</label>
+                    <input name="phone" value={userFormData.phone || ''} onChange={handleFormChange} className="w-full px-3 py-2 border rounded focus:outline-none focus:border-blue-500" />
+                  </div>
+                   <div className="mb-4">
+                    <label className="block text-gray-700 text-sm font-bold mb-2">角色</label>
+                    <select name="role" value={userFormData.role || ''} onChange={handleFormChange} className="w-full px-3 py-2 border rounded focus:outline-none focus:border-blue-500 bg-white">
+                        <option value="employee">Employee (员工)</option>
+                        <option value="manager">Manager (经理)</option>
+                        <option value="partner">Partner (合伙人)</option>
+                        <option value="admin">Admin (管理员)</option>
+                    </select>
+                  </div>
+                </>
               )}
-              {(modalType === 'customer' || modalType === 'cost_center') && (
-                <div><label className="block text-sm font-medium text-gray-700">名称</label><input name="name" value={(formData as Customer).name || ''} onChange={handleFormChange} required className="w-full p-2 border rounded mt-1"/></div>
+              
+              {modalType === 'customer' && (
+                <div className="mb-4">
+                    <label className="block text-gray-700 text-sm font-bold mb-2">客户名称</label>
+                    <input name="name" value={customerFormData.name || ''} onChange={handleFormChange} className="w-full px-3 py-2 border rounded focus:outline-none focus:border-blue-500" required placeholder="请输入客户公司全称"/>
+                </div>
               )}
-              <div className="flex justify-end space-x-4 pt-4">
-                <button type="button" onClick={closeModal} className="px-4 py-2 bg-gray-200 rounded-md hover:bg-gray-300">取消</button>
-                <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">保存</button>
+              
+              <div className="flex justify-end space-x-4 mt-8">
+                <button type="button" onClick={closeModal} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors">取消</button>
+                <button type="submit" disabled={isProcessing} className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 transition-colors">
+                    {isProcessing ? '保存中...' : '保存'}
+                </button>
               </div>
             </form>
           </div>
         </div>
       )}
-    </>
-  )
+    </div>
+  );
 }

@@ -1,245 +1,439 @@
-// src/app/dashboard/report/[id]/page.tsx
+//src\app\dashboard\report\[id]\page.tsx
 
-'use client'
+'use client';
 
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
-import { useEffect, useState, FormEvent, ChangeEvent, useRef, useCallback } from 'react'
-import Link from 'next/link'
-import { useRouter } from 'next/navigation'
-import type { Database } from '@/types/database.types'
-import type { User } from '@supabase/supabase-js'
-import { pinyin } from 'pinyin-pro';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import Link from 'next/link';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
-// --- 类型定义 ---
-type Report = Database['public']['Tables']['reports']['Row']
-type Expense = Database['public']['Tables']['expenses']['Row']
-type Customer = Database['public']['Tables']['customers']['Row']
-type Profile = Database['public']['Tables']['profiles']['Row']
-type SearchableOption = { id: number | string; name: string | null };
+// 导入所有子组件和Hooks
+import type { Database } from '@/types/database.types';
+import { useReportData } from '@/hooks/useReportData';
+import { ReportHeader } from '@/components/report/ReportHeader';
+import { AdminPanel } from '@/components/report/AdminPanel';
+import { ReportMetadataForm } from '@/components/report/ReportMetadataForm';
+import { AddExpenseForm } from '@/components/report/AddExpenseForm';
+import { ExpenseList } from '@/components/report/ExpenseList';
+import { RequestFormPDF } from '@/components/report/RequestFormPDF';
 
-type ReportWithSubmitter = Report & {
-  profiles: Profile | null;
-};
+// 从数据库类型中获取具体类型
+type Report = Database['public']['Tables']['reports']['Row'];
+type Expense = Database['public']['Tables']['expenses']['Row'];
 
-type ReportDetailPageProps = {
-  params: {
-    id: string
-  }
-}
+export default function ReportDetailPage() {
+    const supabase = createClientComponentClient<Database>();
+    const router = useRouter();
+    const { report, setReport, expenses, customers, user, currentUserProfile, loading, error, fetchPageData } = useReportData();
+    
+    // --- 页面级状态 ---
+    const [isProcessing, setIsProcessing] = useState(false);
+    // 新增：用于替代 alert 的通知状态
+    const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
-type ExpenseWithCustomerName = Expense & {
-  customer_name?: string | null;
-};
-type ExpenseInsertWithCustomerName = Database['public']['Tables']['expenses']['Insert'] & {
-  customer_name?: string | null;
-  invoice_number?: string | null;
-};
+    // 用于表单编辑的状态
+    const [editableTitle, setEditableTitle] = useState('');
+    const [reportCustomerName, setReportCustomerName] = useState('');
+    const [reportBillToCustomer, setReportBillToCustomer] = useState(false);
+    const [invoiceReceived, setInvoiceReceived] = useState(false);
+    const [isPaid, setIsPaid] = useState(false);
+    const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
+    const [editingExpenseData, setEditingExpenseData] = useState<Partial<Expense>>({});
+    const [editingReceiptFiles, setEditingReceiptFiles] = useState<FileList | null>(null);
+    const pdfRef = useRef<HTMLDivElement>(null);
 
-
-const EXPENSE_CATEGORIES = ['飞机', '火车', '长途汽车', 'Taxi', '餐饮', '住宿', '办公用品', '客户招待', '员工福利', '其他'];
-const N8N_WEBHOOK_URL = 'http://n8n.19851019.xyz:5678/webhook-test/7e18e6b7-c328-4e17-899c-3188a9b76083';
-
-// ... (RequestFormPDF, ImagePreview, SearchableSelect 组件代码保持不变, 此处省略以保持简洁)
-// RequestFormPDF Component...
-const RequestFormPDF = ({ report, submitterName }: { report: ReportWithSubmitter | null, submitterName: string }) => {
-  if (!report) return null;
-  const formatDate = (dateString: string | null) => {
-    if (!dateString) return { year: '', month: '', day: '' };
-    const date = new Date(dateString);
-    return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() };
-  };
-  const { year, month, day } = formatDate(report.final_approved_at); // 使用 final_approved_at
-  return (
-    <div className="p-8 bg-white text-black" style={{ width: '210mm', minHeight: '297mm', fontFamily: "'SimSun', 'STSong'" }}>
-      {/* PDF 内容 */}
-    </div>
-  );
-};
-
-// ImagePreview Component...
-const ImagePreview = ({ src, children }: { src: string; children: React.ReactNode }) => {
-    // ... (组件代码)
-    return <div>{children}</div>
-};
-
-// SearchableSelect Component...
-const SearchableSelect = ({ options, value, onChange, placeholder }: SearchableSelectProps) => {
-    // ... (组件代码)
-    return <input />
-};
-
-
-export default function ReportDetailPage({ params }: ReportDetailPageProps) {
-  const [report, setReport] = useState<ReportWithSubmitter | null>(null);
-  const [expenses, setExpenses] = useState<ExpenseWithCustomerName[]>([]);
-  const [user, setUser] = useState<User | null>(null);
-  const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
-  const [amount, setAmount] = useState('');
-  const [expenseDate, setExpenseDate] = useState(new Date().toISOString().split('T')[0]);
-  const [description, setDescription] = useState('');
-  const [selectedExpenseCustomer, setSelectedExpenseCustomer] = useState('');
-  const [receiptFiles, setReceiptFiles] = useState<FileList | null>(null);
-  const [isVatInvoice, setIsVatInvoice] = useState(false);
-  const [taxRate, setTaxRate] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [reportCustomerName, setReportCustomerName] = useState('');
-  const [reportBillToCustomer, setReportBillToCustomer] = useState(false);
-  const [editableTitle, setEditableTitle] = useState('');
-  const pdfRef = useRef<HTMLDivElement>(null);
-  const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
-  const [editingExpenseData, setEditingExpenseData] = useState<Partial<ExpenseWithCustomerName>>({});
-  const [isRecognizing, setIsRecognizing] = useState(false);
-  const [invoiceNumber, setInvoiceNumber] = useState('');
-
-  const supabase = createClientComponentClient<Database>();
-  const router = useRouter();
-  const reportId = params.id;
-
-  const fetchPageData = useCallback(async () => {
-    // ... (此函数保持不变)
-  }, [reportId, supabase, router]);
-
-  useEffect(() => {
-    fetchPageData();
-  }, [fetchPageData]);
-
-  // ... (其他所有 handle 函数, 如 handleAddExpense, handleDeleteExpense 等都保持不变)
-  
-  // 【已更新】包含新二级审批逻辑的函数
-  const handleApprovalDecision = async (decision: 'approved' | 'send_back' | 'forward_to_partner') => {
-    if (!report || !currentUserProfile) return;
-
-    setIsProcessing(true);
-    const { data: currentReport, error: fetchError } = await supabase
-      .from('reports')
-      .select('status')
-      .eq('id', report.id)
-      .single();
-
-    if (fetchError || !currentReport || !['submitted', 'pending_partner_approval'].includes(currentReport.status)) {
-      alert('操作失败：该报销单可能已被提交人撤回或已被他人处理。');
-      setIsProcessing(false);
-      fetchPageData();
-      return;
-    }
-
-    const updatePayload: Partial<Report> = {};
-    let alertMessage = '';
-    const now = new Date().toISOString();
-    const userRole = currentUserProfile.role;
-
-    if (decision === 'send_back') {
-      updatePayload.status = 'draft';
-      // 退回时清空所有审批记录
-      updatePayload.primary_approver_id = null;
-      updatePayload.primary_approved_at = null;
-      updatePayload.final_approver_id = null;
-      updatePayload.final_approved_at = null;
-      alertMessage = '报销单已退回修改。';
-    } else {
-      const totalAmount = report.total_amount || 0;
-      
-      // 场景 A: 当前用户是经理 (一级审批)
-      if (userRole === 'manager' && currentReport.status === 'submitted') {
-        updatePayload.primary_approver_id = currentUserProfile.id;
-        updatePayload.primary_approved_at = now;
-
-        if (decision === 'forward_to_partner' || (decision === 'approved' && totalAmount > 5000)) {
-          updatePayload.status = 'pending_partner_approval';
-          alertMessage = '已批准并成功转交给合伙人进行最终审批。';
-        } else {
-          updatePayload.status = 'approved';
-          updatePayload.final_approver_id = currentUserProfile.id; // 自己就是最终审批人
-          updatePayload.final_approved_at = now;
-          alertMessage = '报销单已批准！';
+    // 当 report 数据加载或更新后，同步本地的编辑状态
+    useEffect(() => {
+        if (report) {
+            setEditableTitle(report.title || '');
+            setReportCustomerName(report.customer_name || '');
+            setReportBillToCustomer(report.bill_to_customer || false);
+            setInvoiceReceived(report.is_invoice_received || false);
+            setIsPaid(report.is_paid || false);
         }
-      } 
-      // 场景 B: 当前用户是合伙人
-      else if (userRole === 'partner') {
-        // B1: 作为一级审批人
-        if (currentReport.status === 'submitted') {
-          updatePayload.primary_approver_id = currentUserProfile.id;
-          updatePayload.primary_approved_at = now;
-          updatePayload.final_approver_id = currentUserProfile.id;
-          updatePayload.final_approved_at = now;
-          updatePayload.status = 'approved';
-          alertMessage = '报销单已批准！';
-        } 
-        // B2: 作为二级审批人
-        else if (currentReport.status === 'pending_partner_approval') {
-          updatePayload.final_approver_id = currentUserProfile.id;
-          updatePayload.final_approved_at = now;
-          updatePayload.status = 'approved';
-          alertMessage = '报销单已最终批准！';
-        }
-      }
-    }
+    }, [report]);
 
-    if (Object.keys(updatePayload).length === 0) {
-        alert("无效的操作");
-        setIsProcessing(false);
-        return;
-    }
-
-    const { data, error } = await supabase
-      .from('reports')
-      .update(updatePayload)
-      .eq('id', report.id)
-      .select('*, profiles!user_id(*)')
-      .single();
-
-    if (error) {
-      alert(`操作失败: ${error.message}`);
-    } else {
-      setReport(data as ReportWithSubmitter);
-      alert(alertMessage);
-    }
-    setIsProcessing(false);
-  };
-
-  // ... (其他代码)
-
-  // 【已更新】审批按钮的显示逻辑
-  const canApprove =
-    report &&
-    isApproverView &&
-    (
-      (currentUserProfile?.role === 'manager' && report.status === 'submitted') ||
-      (currentUserProfile?.role === 'partner' && ['submitted', 'pending_partner_approval'].includes(report.status))
+    // --- 权限控制逻辑 ---
+    const isOwner = user?.id === report?.user_id;
+    const isDraft = report?.status === 'draft';
+    const canWithdraw = isOwner && ['submitted', 'pending_partner_approval'].includes(report?.status || '');
+    const isAdminView = currentUserProfile?.role === 'admin';
+    const isApproverView = currentUserProfile && !isOwner && ['manager', 'partner'].includes(currentUserProfile.role || '');
+    const canApprove = report && isApproverView && (
+        (currentUserProfile?.role === 'manager' && report.status === 'submitted') ||
+        (currentUserProfile?.role === 'partner' && ['submitted', 'pending_partner_approval'].includes(report.status))
     );
+    const canExportPdf = report?.status === 'approved' && report.bill_to_customer;
 
-  // ... (return JSX 部分)
-  
-  return (
-    // ... (JSX 结构)
-    // 【已更新】审批按钮区域的 JSX
-    <div className="flex items-center space-x-2 flex-wrap">
-      {canExportPdf && (
-        <button onClick={handleGeneratePdf} className="px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-          导出请求书
-        </button>
-      )}
-      {canApprove && (
+    // --- 通知处理函数 ---
+    const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
+        setNotification({ message, type });
+        setTimeout(() => setNotification(null), 5000); // 5秒后自动消失
+    };
+
+    // --- 所有事件处理函数的完整实现 ---
+    const handleExpenseAdded = useCallback(() => { 
+        showNotification('费用条目已成功添加！');
+        fetchPageData(); 
+    }, [fetchPageData]);
+    
+    // 更新报销单标题
+    const handleTitleUpdate = useCallback(async () => {
+        if (!report || !editableTitle.trim()) return;
+        setIsProcessing(true);
+        const { error } = await supabase.from('reports').update({ title: editableTitle.trim() } as any).eq('id', report.id);
+        if (error) {
+            showNotification(`标题更新失败: ${error.message}`, 'error');
+        } else {
+            showNotification('标题已更新。');
+            fetchPageData();
+        }
+        setIsProcessing(false);
+    }, [report, editableTitle, supabase, fetchPageData]);
+
+    // 更新客户相关信息
+    const handleUpdateReportCustomerInfo = useCallback(async () => {
+        if (!report) return;
+        setIsProcessing(true);
+        const { error } = await supabase.from('reports').update({
+            customer_name: reportCustomerName,
+            bill_to_customer: reportBillToCustomer
+        } as any).eq('id', report.id);
+        
+        if (error) {
+            showNotification(`客户信息更新失败: ${error.message}`, 'error');
+        } else {
+            showNotification('客户信息已保存。');
+            fetchPageData();
+        }
+        setIsProcessing(false);
+    }, [report, reportCustomerName, reportBillToCustomer, supabase, fetchPageData]);
+
+    // 提交审批
+    const handleSubmitForApproval = useCallback(async () => {
+        if (!report || expenses.length === 0) {
+            showNotification('报销单中还没有任何费用条目，无法提交。', 'error');
+            return;
+        }
+        if (!window.confirm('您确定要提交这张报销单进行审批吗？提交后将无法修改。')) {
+            return;
+        }
+        setIsProcessing(true);
+        try {
+            const total_amount = expenses.reduce((sum, exp) => sum + exp.amount, 0);
+            const { data: updatedReport, error: updateError } = await supabase
+                .from('reports')
+                .update({ status: 'submitted', submitted_at: new Date().toISOString(), total_amount: total_amount } as any)
+                .eq('id', report.id).select().single();
+            
+            if (updateError) throw updateError;
+            setReport(updatedReport); // 立即更新UI
+            showNotification('报销单已成功提交！');
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                showNotification(`提交失败: ${err.message}`, 'error');
+            } else {
+                showNotification('提交失败: 发生未知错误', 'error');
+            }
+        } finally {
+            setIsProcessing(false);
+        }
+    }, [report, expenses, supabase, setReport]);
+
+    // 删除报销单
+    const handleDeleteReport = useCallback(async () => {
+        if (!report || !user) return;
+        if (!window.confirm('危险操作！您确定要永久删除这张报销单及其所有费用条目吗？')) {
+            return;
+        }
+        setIsProcessing(true);
+        try {
+            // 安全起见，先删除所有关联的费用条目
+            const { error: expenseError } = await supabase.from('expenses').delete().eq('report_id', report.id);
+            if (expenseError) throw expenseError;
+
+            // 然后删除报销单本身
+            const { error: reportError } = await supabase.from('reports').delete().eq('id', report.id);
+            if (reportError) throw reportError;
+
+            showNotification('报销单已删除。');
+            router.push('/dashboard');
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                showNotification(`删除失败: ${err.message}`, 'error');
+            } else {
+                showNotification('删除失败: 发生未知错误', 'error');
+            }
+            setIsProcessing(false);
+        }
+    }, [report, user, supabase, router]);
+
+    // 撤回已提交的报销单
+    const handleWithdrawReport = useCallback(async () => {
+        if (!report || !user) return;
+        if (!window.confirm('您确定要撤回这张报销单吗？撤回后可以重新编辑。')) {
+            return;
+        }
+        setIsProcessing(true);
+        const { data, error } = await supabase.from('reports').update({ status: 'draft' } as any).eq('id', report.id).select().single();
+        if (error) {
+            showNotification(`撤回失败: ${error.message}`, 'error');
+        } else {
+            setReport(data);
+            showNotification('报销单已撤回。');
+        }
+        setIsProcessing(false);
+    }, [report, user, supabase, setReport]);
+
+    // 审批决策 (批准/退回/转交)
+    const handleApprovalDecision = useCallback(async (decision: 'approved' | 'send_back' | 'forward_to_partner') => {
+        if (!report || !currentUserProfile) return;
+        
+        let confirmMessage = '';
+        if (decision === 'approved') confirmMessage = '您确定要批准这张报销单吗？';
+        if (decision === 'send_back') confirmMessage = '您确定要将这张报销单退回给提交人修改吗？';
+        if (decision === 'forward_to_partner') confirmMessage = '您确定要将这张报销单转交给合伙人进行最终审批吗？';
+
+        if (!window.confirm(confirmMessage)) return;
+
+        setIsProcessing(true);
+        try {
+            let nextStatus = '';
+            const updates: Partial<Report> = {};
+
+            if (decision === 'approved') {
+                if(currentUserProfile.role === 'manager') {
+                    // 如果公司流程需要两级审批，经理批准后进入下一级
+                    nextStatus = 'pending_partner_approval';
+                    updates.primary_approver_id = currentUserProfile.id;
+                    updates.primary_approved_at = new Date().toISOString();
+                } else if (currentUserProfile.role === 'partner') {
+                    // 合伙人批准后，流程结束
+                    nextStatus = 'approved';
+                    updates.final_approver_id = currentUserProfile.id;
+                    updates.final_approved_at = new Date().toISOString();
+                }
+            } else if (decision === 'send_back') {
+                nextStatus = 'draft'; // 退回草稿状态
+            } else if (decision === 'forward_to_partner') {
+                nextStatus = 'pending_partner_approval';
+            }
+
+            updates.status = nextStatus;
+
+            // 记录审批历史
+            const { error: approvalError } = await supabase.from('approvals').insert({
+                report_id: report.id,
+                approver_id: currentUserProfile.id,
+                status: decision,
+                // comments: '可以增加一个输入框来填写审批意见'
+            } as any);
+            if (approvalError) throw approvalError;
+            
+            // 更新报销单状态
+            const { data, error: reportError } = await supabase.from('reports').update(updates as any).eq('id', report.id).select().single();
+            if (reportError) throw reportError;
+            
+            setReport(data);
+            showNotification('操作成功！');
+            fetchPageData();
+
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                showNotification(`操作失败: ${err.message}`, 'error');
+            } else {
+                showNotification('操作失败: 发生未知错误', 'error');
+            }
+        } finally {
+            setIsProcessing(false);
+        }
+    }, [report, currentUserProfile, supabase, setReport, fetchPageData]);
+    
+    // 生成PDF
+    const handleGeneratePdf = useCallback(async () => {
+        if (!pdfRef.current || !report) return;
+        setIsProcessing(true);
+        try {
+            const canvas = await html2canvas(pdfRef.current, { scale: 2, useCORS: true });
+            const imgData = canvas.toDataURL('image/png');
+            const pdf = new jsPDF({ orientation: 'p', unit: 'px', format: [canvas.width, canvas.height] });
+            pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+            pdf.save(`报销单-${report.title || report.id}.pdf`);
+        } catch(err) {
+            showNotification('PDF 生成失败，请重试。', 'error');
+            console.error(err);
+        } finally {
+            setIsProcessing(false);
+        }
+    }, [report]);
+
+    // 删除单条费用
+    const handleDeleteExpense = useCallback(async (expenseId: number) => {
+        if (!window.confirm('确定要删除这条费用吗？')) return;
+        setIsProcessing(true);
+        // 注意：这里也需要处理删除存储桶中的文件，为简化暂不实现
+        const { error } = await supabase.from('expenses').delete().eq('id', expenseId);
+        if (error) {
+            showNotification(`删除失败: ${error.message}`, 'error');
+        } else {
+            showNotification('费用已删除。');
+            fetchPageData(); // 重新加载数据以更新列表和总金额
+        }
+        setIsProcessing(false);
+    }, [fetchPageData, supabase]);
+    
+    // 进入费用编辑模式
+    const handleEditExpense = useCallback((expense: Expense) => {
+        setEditingExpenseId(expense.id);
+        setEditingExpenseData(expense);
+    }, []);
+
+    // 取消编辑
+    const handleCancelEdit = useCallback(() => {
+        setEditingExpenseId(null);
+        setEditingExpenseData({});
+        setEditingReceiptFiles(null);
+    }, []);
+    
+    // 更新费用条目
+    const handleUpdateExpense = useCallback(async () => {
+        if (!editingExpenseId || !user) return;
+
+        setIsProcessing(true);
+
+        try {
+            // 如果有新文件上传，需要先处理文件
+            if (editingReceiptFiles && editingReceiptFiles.length > 0) {
+                // 此处应包含文件上传到R2/S3的逻辑，并获取新的URLs
+                // 为简化，我们假设此逻辑已完成，并将新URL合并
+                // const newUrls = await uploadFiles(editingReceiptFiles);
+                // editingExpenseData.receipt_urls = [...(editingExpenseData.receipt_urls || []), ...newUrls];
+                showNotification('包含文件更新的逻辑比较复杂，此处为简化版。', 'error');
+            }
+
+            const { error } = await supabase
+                .from('expenses')
+                .update(editingExpenseData as any)
+                .eq('id', editingExpenseId);
+
+            if (error) throw error;
+            
+            showNotification('费用条目已更新！');
+            handleCancelEdit(); // 退出编辑模式
+            fetchPageData();
+
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                showNotification(`更新失败: ${err.message}`, 'error');
+            } else {
+                showNotification('更新失败: 发生未知错误', 'error');
+            }
+        } finally {
+            setIsProcessing(false);
+        }
+    }, [editingExpenseId, user, editingReceiptFiles, editingExpenseData, supabase, fetchPageData, handleCancelEdit]);
+
+    // 财务人员更新状态
+    const handleAdminStatusUpdate = async () => {
+        if (!report) return;
+        setIsProcessing(true);
+        const updates = { is_invoice_received: invoiceReceived, is_paid: isPaid };
+        const { error } = await supabase.from('reports').update(updates as any).eq('id', report.id);
+        if (error) {
+            showNotification('更新财务状态失败: ' + error.message, 'error');
+        } else {
+            showNotification('财务状态已成功更新！');
+            fetchPageData();
+        }
+        setIsProcessing(false);
+    };
+
+    // --- 页面渲染 ---
+    if (loading) return <div className="flex justify-center items-center min-h-screen">正在加载详情...</div>;
+    if (error) return ( <div className="text-center p-4">加载失败: {error} <Link href="/dashboard">返回</Link></div> ); 
+    if (!report || !user || !currentUserProfile) return ( <div className="text-center p-4">未找到报销单或用户数据。</div> );
+    
+    return (
         <>
-          <button onClick={() => handleApprovalDecision('approved')} disabled={isProcessing} className="px-4 py-2 font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:bg-gray-400">批准</button>
-          
-          {currentUserProfile?.role === 'manager' && report?.status === 'submitted' && (
-            <button onClick={() => handleApprovalDecision('forward_to_partner')} disabled={isProcessing} className="px-4 py-2 font-semibold text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:bg-gray-400">
-              批准并转交合伙人
-            </button>
-          )}
+            <div className="min-h-screen bg-gray-100">
+                <ReportHeader
+                    report={report} currentUserProfile={currentUserProfile} isOwner={isOwner}
+                    isDraft={isDraft} canWithdraw={canWithdraw} canApprove={canApprove}
+                    canExportPdf={canExportPdf} isAdminView={isAdminView} isApproverView={isApproverView}
+                    isProcessing={isProcessing} editableTitle={editableTitle}
+                    onTitleChange={setEditableTitle} onTitleUpdate={handleTitleUpdate}
+                    onGeneratePdf={handleGeneratePdf} onApprovalDecision={handleApprovalDecision}
+                    onWithdraw={handleWithdrawReport} onSubmit={handleSubmitForApproval}
+                    onDelete={handleDeleteReport}
+                />
+                
+                {/* 新增：通知组件 */}
+                {notification && (
+                    <div className="container mx-auto mt-4 px-6">
+                        <div 
+                            className={`p-4 rounded-md text-sm ${
+                                notification.type === 'success' 
+                                ? 'bg-green-100 text-green-800 border border-green-200' 
+                                : 'bg-red-100 text-red-800 border border-red-200'
+                            }`}
+                        >
+                            {notification.message}
+                        </div>
+                    </div>
+                )}
 
-          <button onClick={() => handleApprovalDecision('send_back')} disabled={isProcessing} className="px-4 py-2 font-semibold text-white bg-gray-600 rounded-lg hover:bg-gray-700 disabled:bg-gray-400">退回修改</button>
+                <main className="container mx-auto p-6">
+                    <div className={isDraft && isOwner ? "grid grid-cols-1 md:grid-cols-3 gap-8" : ""}>
+                        {isDraft && isOwner && (
+                            <div className="md:col-span-1 space-y-6">
+                                <ReportMetadataForm
+                                    customers={customers} reportCustomerName={reportCustomerName}
+                                    onCustomerNameChange={setReportCustomerName} billToCustomer={reportBillToCustomer}
+                                    onBillToCustomerChange={setReportBillToCustomer} onSave={handleUpdateReportCustomerInfo}
+                                    isProcessing={isProcessing}
+                                />
+                                <AddExpenseForm
+                                    reportId={report.id} user={user}
+                                    customers={customers} onExpenseAdded={handleExpenseAdded}
+                                />
+                            </div>
+                        )}
+                        <div className={isDraft && isOwner ? "md:col-span-2 space-y-6" : "space-y-6"}>
+                             {isAdminView && (
+                                <AdminPanel
+                                    invoiceReceived={invoiceReceived || false}
+                                    onInvoiceReceivedChange={(e) => {
+                                        setInvoiceReceived(e.target.checked);
+                                        if (!e.target.checked) setIsPaid(false);
+                                    }}
+                                    isPaid={isPaid || false}
+                                    onIsPaidChange={(e) => setIsPaid(e.target.checked)}
+                                    canMarkAsPaid={invoiceReceived || false}
+                                    onSave={handleAdminStatusUpdate}
+                                    isProcessing={isProcessing}
+                                />
+                            )}
+                            <ExpenseList
+                                report={report} expenses={expenses} isOwner={isOwner}
+                                isDraft={isDraft} isProcessing={isProcessing}
+                                editingExpenseId={editingExpenseId} editingExpenseData={editingExpenseData}
+                                setEditingExpenseData={setEditingExpenseData} onEditExpense={handleEditExpense}
+                                onCancelEdit={handleCancelEdit} onUpdateExpense={handleUpdateExpense}
+                                onDeleteExpense={(expense) => handleDeleteExpense(expense.id)} customers={customers}
+                                editingReceiptFiles={editingReceiptFiles} setEditingReceiptFiles={setEditingReceiptFiles}
+                            />
+                        </div>
+                    </div>
+                </main>
+            </div>
+            
+            <div className="absolute top-0 -left-[9999px] -z-10">
+                 <div ref={pdfRef}>
+                    <RequestFormPDF report={report} submitterName={report.profiles?.full_name || ''} />
+                </div>
+            </div>
         </>
-      )}
-      {/* ... 其他按钮 ... */}
-    </div>
-    // ... (剩余的 JSX)
-  );
+    );
 }

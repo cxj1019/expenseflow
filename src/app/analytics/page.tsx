@@ -1,4 +1,4 @@
-// src/app/analytics/page.tsx
+//src\app\analytics\page.tsx
 
 'use client'
 
@@ -11,7 +11,7 @@ import type { Database } from '@/types/database.types'
 
 type Profile = Database['public']['Tables']['profiles']['Row']
 
-// 【已更新】定义更丰富的类型，包含两级审批人信息
+// 定义包含两级审批人信息的丰富类型
 type ExpenseWithDetails = Database['public']['Tables']['expenses']['Row'] & {
   profiles: Pick<Profile, 'full_name'> | null
   reports: {
@@ -39,12 +39,23 @@ export default function AnalyticsPage() {
   const supabase = createClientComponentClient<Database>()
 
   useEffect(() => {
-    // ... (useEffect 权限检查部分保持不变)
+    const checkRole = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        router.push('/'); 
+        return; 
+      }
+
+      const { data: profileData } = await supabase.from('profiles').select('*').eq('id', user.id).single()
+      setProfile(profileData);
+      setLoading(false);
+    }
+    checkRole()
   }, [supabase, router])
 
   const handleFetchData = async () => {
     setIsFetching(true);
-    // 【已更新】查询语句，关联两次 profiles 表来获取两级审批人的名字
+    // 【已修正】更正了 final_approver 的外键名称
     let query = supabase
       .from('expenses')
       .select(`
@@ -58,7 +69,7 @@ export default function AnalyticsPage() {
           primary_approved_at,
           final_approved_at,
           primary_approver:profiles!reports_primary_approver_id_fkey(full_name),
-          final_approver:profiles!reports_final_approver_id_fkey(full_name)
+          final_approver:profiles!reports_approver_id_fkey(full_name)
         )
       `)
       .order('expense_date', { ascending: false });
@@ -75,7 +86,7 @@ export default function AnalyticsPage() {
       console.error('查询费用数据失败: ', error);
       alert('查询费用数据失败: ' + error.message);
     } else {
-      setFilteredExpenses(data as ExpenseWithDetails[]);
+      setFilteredExpenses(data as unknown as ExpenseWithDetails[]);
     }
     setIsFetching(false);
   };
@@ -86,7 +97,6 @@ export default function AnalyticsPage() {
       return;
     }
 
-    // 【已更新】导出数据以匹配新的列
     const dataToExport = filteredExpenses.map(exp => ({
       '费用日期': new Date(exp.expense_date!).toLocaleDateString(),
       '费用类型': exp.category,
@@ -110,32 +120,56 @@ export default function AnalyticsPage() {
   };
 
   if (loading) return <div className="flex justify-center items-center min-h-screen">正在加载...</div>;
-  if (!profile || !['manager', 'partner'].includes(profile.role)) {
-    // ... (访问被拒绝的 JSX)
+  if (!profile || !['manager', 'partner', 'admin'].includes(profile.role)) {
+    return (
+      <div className="flex flex-col justify-center items-center min-h-screen text-center">
+        <h1 className="text-3xl font-bold text-red-600">访问被拒绝</h1>
+        <p className="text-gray-600 mt-2">您没有权限访问此页面。</p>
+        <Link href="/dashboard" className="mt-6 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">返回仪表盘</Link>
+      </div>
+    );
   }
 
   return (
     <div className="min-h-screen bg-gray-100">
       <header className="bg-white shadow">
-        {/* ... (header JSX) */}
+        <nav className="container mx-auto px-6 py-4 flex justify-between items-center">
+          <h1 className="text-xl font-bold text-gray-800">费用分析与导出</h1>
+          <Link href="/dashboard" className="text-blue-600 hover:underline">返回仪表盘</Link>
+        </nav>
       </header>
       <main className="container mx-auto p-6">
         {/* 筛选区域 */}
         <div className="bg-white p-6 rounded-lg shadow-md mb-8">
-          {/* ... (筛选表单 JSX) */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+            <div>
+              <label htmlFor="startDate" className="block text-sm font-medium text-gray-700">开始日期</label>
+              <input type="date" id="startDate" value={startDate} onChange={e => setStartDate(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"/>
+            </div>
+            <div>
+              <label htmlFor="endDate" className="block text-sm font-medium text-gray-700">结束日期</label>
+              <input type="date" id="endDate" value={endDate} onChange={e => setEndDate(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"/>
+            </div>
+            <div>
+              <label htmlFor="customer" className="block text-sm font-medium text-gray-700">客户名称</label>
+              <input type="text" id="customer" value={customer} onChange={e => setCustomer(e.target.value)} placeholder="可模糊查询" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"/>
+            </div>
+            <button onClick={handleFetchData} disabled={isFetching} className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+              {isFetching ? '查询中...' : '查询'}
+            </button>
+          </div>
         </div>
 
         {/* 结果区域 */}
         <div className="bg-white p-6 rounded-lg shadow-md">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-2xl font-bold">查询结果</h2>
-            <button onClick={handleExportToExcel} disabled={filteredExpenses.length === 0} className="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-400">
+            <button onClick={handleExportToExcel} disabled={filteredExpenses.length === 0} className="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed">
               导出为 Excel
             </button>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
-              {/* 【已更新】表格头部 */}
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">费用日期</th>
@@ -152,20 +186,19 @@ export default function AnalyticsPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {/* 【已更新】表格内容 */}
                 {filteredExpenses.map(exp => (
                   <tr key={exp.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{new Date(exp.expense_date!).toLocaleDateString()}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.category}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono">¥{exp.amount?.toFixed(2)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.profiles?.full_name}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.reports?.customer_name || '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.reports?.title}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.reports?.submitted_at ? new Date(exp.reports.submitted_at).toLocaleDateString() : '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.reports?.primary_approved_at ? new Date(exp.reports.primary_approved_at).toLocaleDateString() : '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.reports?.primary_approver?.full_name || '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.reports?.final_approved_at ? new Date(exp.reports.final_approved_at).toLocaleDateString() : '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{exp.reports?.final_approver?.full_name || '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{new Date(exp.expense_date!).toLocaleDateString()}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.category}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-mono">¥{exp.amount?.toFixed(2)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.profiles?.full_name}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.customer_name || '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.title}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.submitted_at ? new Date(exp.reports.submitted_at).toLocaleDateString() : '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.primary_approved_at ? new Date(exp.reports.primary_approved_at).toLocaleDateString() : '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.primary_approver?.full_name || '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.final_approved_at ? new Date(exp.reports.final_approved_at).toLocaleDateString() : '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.final_approver?.full_name || '-'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -177,3 +210,4 @@ export default function AnalyticsPage() {
     </div>
   )
 }
+
