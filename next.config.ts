@@ -19,7 +19,7 @@ const nextConfig: NextConfig = {
       {
         protocol: 'https',
         // 这里已填入您 .env.local 中的 R2 域名
-        hostname: 'pub-cb1b22b517734daf8887a20a099e55d0.r2.dev', 
+        hostname: 'images.19851019.xyz', 
         port: '',
         pathname: '/**',
       },

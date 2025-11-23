@@ -1,5 +1,3 @@
-//src\app\dashboard\report\[id]\page.tsx
-
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
@@ -26,10 +24,23 @@ type Expense = Database['public']['Tables']['expenses']['Row'];
 export default function ReportDetailPage() {
     const supabase = createClientComponentClient<Database>();
     const router = useRouter();
-    const { report, setReport, expenses, customers, user, currentUserProfile, loading, error, fetchPageData } = useReportData();
+    
+    // 1. 从更新后的 Hook 中解构出删除方法和状态
+    const { 
+        report, setReport, expenses, customers, user, currentUserProfile, 
+        loading, error, fetchPageData,
+        deleteReport,   // 新增：来自 Hook 的删除报销单方法
+        deleteExpense,  // 新增：来自 Hook 的删除费用方法
+        isProcessing: hookIsProcessing // 新增：Hook 内部的处理状态（主要是删除操作）
+    } = useReportData();
     
     // --- 页面级状态 ---
-    const [isProcessing, setIsProcessing] = useState(false);
+    // 本地处理状态 (用于提交审批、更新标题等尚未移入 Hook 的操作)
+    const [localIsProcessing, setLocalIsProcessing] = useState(false);
+    
+    // 合并后的全局处理状态 (只要有任意一方在处理，就禁用UI)
+    const isProcessing = localIsProcessing || hookIsProcessing;
+
     // 新增：用于替代 alert 的通知状态
     const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
@@ -73,7 +84,8 @@ export default function ReportDetailPage() {
         setTimeout(() => setNotification(null), 5000); // 5秒后自动消失
     };
 
-    // --- 所有事件处理函数的完整实现 ---
+    // --- 事件处理函数 ---
+
     const handleExpenseAdded = useCallback(() => { 
         showNotification('费用条目已成功添加！');
         fetchPageData(); 
@@ -82,7 +94,7 @@ export default function ReportDetailPage() {
     // 更新报销单标题
     const handleTitleUpdate = useCallback(async () => {
         if (!report || !editableTitle.trim()) return;
-        setIsProcessing(true);
+        setLocalIsProcessing(true);
         const { error } = await supabase.from('reports').update({ title: editableTitle.trim() } as any).eq('id', report.id);
         if (error) {
             showNotification(`标题更新失败: ${error.message}`, 'error');
@@ -90,13 +102,13 @@ export default function ReportDetailPage() {
             showNotification('标题已更新。');
             fetchPageData();
         }
-        setIsProcessing(false);
+        setLocalIsProcessing(false);
     }, [report, editableTitle, supabase, fetchPageData]);
 
     // 更新客户相关信息
     const handleUpdateReportCustomerInfo = useCallback(async () => {
         if (!report) return;
-        setIsProcessing(true);
+        setLocalIsProcessing(true);
         const { error } = await supabase.from('reports').update({
             customer_name: reportCustomerName,
             bill_to_customer: reportBillToCustomer
@@ -108,7 +120,7 @@ export default function ReportDetailPage() {
             showNotification('客户信息已保存。');
             fetchPageData();
         }
-        setIsProcessing(false);
+        setLocalIsProcessing(false);
     }, [report, reportCustomerName, reportBillToCustomer, supabase, fetchPageData]);
 
     // 提交审批
@@ -120,7 +132,7 @@ export default function ReportDetailPage() {
         if (!window.confirm('您确定要提交这张报销单进行审批吗？提交后将无法修改。')) {
             return;
         }
-        setIsProcessing(true);
+        setLocalIsProcessing(true);
         try {
             const total_amount = expenses.reduce((sum, exp) => sum + exp.amount, 0);
             const { data: updatedReport, error: updateError } = await supabase
@@ -138,37 +150,9 @@ export default function ReportDetailPage() {
                 showNotification('提交失败: 发生未知错误', 'error');
             }
         } finally {
-            setIsProcessing(false);
+            setLocalIsProcessing(false);
         }
     }, [report, expenses, supabase, setReport]);
-
-    // 删除报销单
-    const handleDeleteReport = useCallback(async () => {
-        if (!report || !user) return;
-        if (!window.confirm('危险操作！您确定要永久删除这张报销单及其所有费用条目吗？')) {
-            return;
-        }
-        setIsProcessing(true);
-        try {
-            // 安全起见，先删除所有关联的费用条目
-            const { error: expenseError } = await supabase.from('expenses').delete().eq('report_id', report.id);
-            if (expenseError) throw expenseError;
-
-            // 然后删除报销单本身
-            const { error: reportError } = await supabase.from('reports').delete().eq('id', report.id);
-            if (reportError) throw reportError;
-
-            showNotification('报销单已删除。');
-            router.push('/dashboard');
-        } catch (err: unknown) {
-            if (err instanceof Error) {
-                showNotification(`删除失败: ${err.message}`, 'error');
-            } else {
-                showNotification('删除失败: 发生未知错误', 'error');
-            }
-            setIsProcessing(false);
-        }
-    }, [report, user, supabase, router]);
 
     // 撤回已提交的报销单
     const handleWithdrawReport = useCallback(async () => {
@@ -176,7 +160,7 @@ export default function ReportDetailPage() {
         if (!window.confirm('您确定要撤回这张报销单吗？撤回后可以重新编辑。')) {
             return;
         }
-        setIsProcessing(true);
+        setLocalIsProcessing(true);
         const { data, error } = await supabase.from('reports').update({ status: 'draft' } as any).eq('id', report.id).select().single();
         if (error) {
             showNotification(`撤回失败: ${error.message}`, 'error');
@@ -184,7 +168,7 @@ export default function ReportDetailPage() {
             setReport(data);
             showNotification('报销单已撤回。');
         }
-        setIsProcessing(false);
+        setLocalIsProcessing(false);
     }, [report, user, supabase, setReport]);
 
     // 审批决策 (批准/退回/转交)
@@ -198,41 +182,36 @@ export default function ReportDetailPage() {
 
         if (!window.confirm(confirmMessage)) return;
 
-        setIsProcessing(true);
+        setLocalIsProcessing(true);
         try {
             let nextStatus = '';
             const updates: Partial<Report> = {};
 
             if (decision === 'approved') {
                 if(currentUserProfile.role === 'manager') {
-                    // 如果公司流程需要两级审批，经理批准后进入下一级
                     nextStatus = 'pending_partner_approval';
                     updates.primary_approver_id = currentUserProfile.id;
                     updates.primary_approved_at = new Date().toISOString();
                 } else if (currentUserProfile.role === 'partner') {
-                    // 合伙人批准后，流程结束
                     nextStatus = 'approved';
                     updates.final_approver_id = currentUserProfile.id;
                     updates.final_approved_at = new Date().toISOString();
                 }
             } else if (decision === 'send_back') {
-                nextStatus = 'draft'; // 退回草稿状态
+                nextStatus = 'draft';
             } else if (decision === 'forward_to_partner') {
                 nextStatus = 'pending_partner_approval';
             }
 
             updates.status = nextStatus;
 
-            // 记录审批历史
             const { error: approvalError } = await supabase.from('approvals').insert({
                 report_id: report.id,
                 approver_id: currentUserProfile.id,
                 status: decision,
-                // comments: '可以增加一个输入框来填写审批意见'
             } as any);
             if (approvalError) throw approvalError;
             
-            // 更新报销单状态
             const { data, error: reportError } = await supabase.from('reports').update(updates as any).eq('id', report.id).select().single();
             if (reportError) throw reportError;
             
@@ -247,14 +226,14 @@ export default function ReportDetailPage() {
                 showNotification('操作失败: 发生未知错误', 'error');
             }
         } finally {
-            setIsProcessing(false);
+            setLocalIsProcessing(false);
         }
     }, [report, currentUserProfile, supabase, setReport, fetchPageData]);
     
     // 生成PDF
     const handleGeneratePdf = useCallback(async () => {
         if (!pdfRef.current || !report) return;
-        setIsProcessing(true);
+        setLocalIsProcessing(true);
         try {
             const canvas = await html2canvas(pdfRef.current, { scale: 2, useCORS: true });
             const imgData = canvas.toDataURL('image/png');
@@ -265,24 +244,11 @@ export default function ReportDetailPage() {
             showNotification('PDF 生成失败，请重试。', 'error');
             console.error(err);
         } finally {
-            setIsProcessing(false);
+            setLocalIsProcessing(false);
         }
     }, [report]);
 
-    // 删除单条费用
-    const handleDeleteExpense = useCallback(async (expenseId: number) => {
-        if (!window.confirm('确定要删除这条费用吗？')) return;
-        setIsProcessing(true);
-        // 注意：这里也需要处理删除存储桶中的文件，为简化暂不实现
-        const { error } = await supabase.from('expenses').delete().eq('id', expenseId);
-        if (error) {
-            showNotification(`删除失败: ${error.message}`, 'error');
-        } else {
-            showNotification('费用已删除。');
-            fetchPageData(); // 重新加载数据以更新列表和总金额
-        }
-        setIsProcessing(false);
-    }, [fetchPageData, supabase]);
+    // --- 删除相关逻辑已移至 Hook，此处移除 handleDeleteReport 和 handleDeleteExpense ---
     
     // 进入费用编辑模式
     const handleEditExpense = useCallback((expense: Expense) => {
@@ -301,15 +267,10 @@ export default function ReportDetailPage() {
     const handleUpdateExpense = useCallback(async () => {
         if (!editingExpenseId || !user) return;
 
-        setIsProcessing(true);
+        setLocalIsProcessing(true);
 
         try {
-            // 如果有新文件上传，需要先处理文件
             if (editingReceiptFiles && editingReceiptFiles.length > 0) {
-                // 此处应包含文件上传到R2/S3的逻辑，并获取新的URLs
-                // 为简化，我们假设此逻辑已完成，并将新URL合并
-                // const newUrls = await uploadFiles(editingReceiptFiles);
-                // editingExpenseData.receipt_urls = [...(editingExpenseData.receipt_urls || []), ...newUrls];
                 showNotification('包含文件更新的逻辑比较复杂，此处为简化版。', 'error');
             }
 
@@ -321,7 +282,7 @@ export default function ReportDetailPage() {
             if (error) throw error;
             
             showNotification('费用条目已更新！');
-            handleCancelEdit(); // 退出编辑模式
+            handleCancelEdit();
             fetchPageData();
 
         } catch (err: unknown) {
@@ -331,14 +292,14 @@ export default function ReportDetailPage() {
                 showNotification('更新失败: 发生未知错误', 'error');
             }
         } finally {
-            setIsProcessing(false);
+            setLocalIsProcessing(false);
         }
     }, [editingExpenseId, user, editingReceiptFiles, editingExpenseData, supabase, fetchPageData, handleCancelEdit]);
 
     // 财务人员更新状态
     const handleAdminStatusUpdate = async () => {
         if (!report) return;
-        setIsProcessing(true);
+        setLocalIsProcessing(true);
         const updates = { is_invoice_received: invoiceReceived, is_paid: isPaid };
         const { error } = await supabase.from('reports').update(updates as any).eq('id', report.id);
         if (error) {
@@ -347,7 +308,7 @@ export default function ReportDetailPage() {
             showNotification('财务状态已成功更新！');
             fetchPageData();
         }
-        setIsProcessing(false);
+        setLocalIsProcessing(false);
     };
 
     // --- 页面渲染 ---
@@ -366,10 +327,10 @@ export default function ReportDetailPage() {
                     onTitleChange={setEditableTitle} onTitleUpdate={handleTitleUpdate}
                     onGeneratePdf={handleGeneratePdf} onApprovalDecision={handleApprovalDecision}
                     onWithdraw={handleWithdrawReport} onSubmit={handleSubmitForApproval}
-                    onDelete={handleDeleteReport}
+                    // 2. 修改：直接传递 Hook 中的 deleteReport 函数
+                    onDelete={deleteReport}
                 />
                 
-                {/* 新增：通知组件 */}
                 {notification && (
                     <div className="container mx-auto mt-4 px-6">
                         <div 
@@ -421,7 +382,9 @@ export default function ReportDetailPage() {
                                 editingExpenseId={editingExpenseId} editingExpenseData={editingExpenseData}
                                 setEditingExpenseData={setEditingExpenseData} onEditExpense={handleEditExpense}
                                 onCancelEdit={handleCancelEdit} onUpdateExpense={handleUpdateExpense}
-                                onDeleteExpense={(expense) => handleDeleteExpense(expense.id)} customers={customers}
+                                // 3. 修改：使用 Hook 中的 deleteExpense 函数
+                                onDeleteExpense={(expense) => deleteExpense(expense.id)} 
+                                customers={customers}
                                 editingReceiptFiles={editingReceiptFiles} setEditingReceiptFiles={setEditingReceiptFiles}
                             />
                         </div>

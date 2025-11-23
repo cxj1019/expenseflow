@@ -74,8 +74,16 @@ export const ExpenseListItem = ({ expense, isOwner, isDraft, isProcessing, onEdi
                     </a>
                   ) : (
                     <ImagePreview key={index} src={url}>
+                      {/* 这里添加了 unoptimized 属性，解决移动端预览失败问题 */}
                       <a href={url} target="_blank" rel="noopener noreferrer" className="block w-16 h-16 rounded border-2 border-transparent hover:border-blue-500 overflow-hidden group relative">
-                        <Image src={url} alt={`发票 ${index+1}`} width={64} height={64} className="w-full h-full object-cover" />
+                        <Image 
+                          src={url} 
+                          alt={`发票 ${index+1}`} 
+                          width={64} 
+                          height={64} 
+                          className="w-full h-full object-cover" 
+                          unoptimized 
+                        />
                       </a>
                     </ImagePreview>
                   )
