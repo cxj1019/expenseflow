@@ -3,6 +3,7 @@
 'use client';
 
 import Link from 'next/link';
+import { FaPrint } from 'react-icons/fa'; // 1. 引入打印图标
 import type { Database } from '@/types/database.types';
 import type { ReportWithRelations } from '@/hooks/useReportData';
 
@@ -47,6 +48,8 @@ interface ReportHeaderProps {
     onTitleChange: (newTitle: string) => void;
     onTitleUpdate: () => void;
     onGeneratePdf: () => void;
+    // 2. 新增打印回调
+    onPrint?: () => void;
     onApprovalDecision: (decision: 'approved' | 'send_back' | 'forward_to_partner') => void;
     onWithdraw: () => void;
     onSubmit: () => void;
@@ -68,6 +71,7 @@ export const ReportHeader = ({
     onTitleChange,
     onTitleUpdate,
     onGeneratePdf,
+    onPrint, // 解构出 onPrint
     onApprovalDecision,
     onWithdraw,
     onSubmit,
@@ -147,6 +151,14 @@ export const ReportHeader = ({
 
                 {/* 右侧：操作按钮 */}
                 <div className="flex items-start space-x-2 flex-wrap gap-y-2 pt-2">
+                    {/* 3. 新增：打印凭单按钮 */}
+                    <button 
+                        onClick={onPrint}
+                        className="flex items-center gap-1 px-4 py-2 font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
+                    >
+                        <FaPrint /> 打印凭单
+                    </button>
+
                     {canExportPdf && (<button onClick={onGeneratePdf} className="px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700">导出请求书</button>)}
                     
                     {canApprove && !isAdminView && (

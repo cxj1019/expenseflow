@@ -6,17 +6,16 @@ import React from 'react';
 import Image from 'next/image';
 import type { Database } from '@/types/database.types';
 import { FaPlane, FaTrain, FaUtensils, FaTaxi, FaBuilding, FaFilePdf } from 'react-icons/fa';
-import { ImagePreview } from '../shared/ImagePreview';
+// 1. 引入新的通用预览组件
+import { FilePreview } from '../shared/FilePreview';
 
 type Expense = Database['public']['Tables']['expenses']['Row'];
 
-// 类别图标映射
 const categoryIcons: { [key: string]: JSX.Element } = {
   '飞机': <FaPlane className="text-blue-500" />,
   '火车': <FaTrain className="text-green-500" />,
   '餐饮': <FaUtensils className="text-orange-500" />,
   'Taxi': <FaTaxi className="text-yellow-500" />,
-  // 添加更多图标...
   '默认': <FaBuilding className="text-gray-500" />,
 };
 
@@ -65,28 +64,26 @@ export const ExpenseListItem = ({ expense, isOwner, isDraft, isProcessing, onEdi
               {expense.receipt_urls.map((url, index) => {
                 const isPdf = url.toLowerCase().endsWith('.pdf');
                 return (
-                  isPdf ? (
-                    <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="block w-16 h-16 rounded border-2 border-transparent hover:border-blue-500 overflow-hidden group relative">
-                      <div className="w-full h-full bg-red-50 flex flex-col items-center justify-center text-red-600">
-                        <FaFilePdf className="text-2xl"/>
-                        <span className="text-xs mt-1">发票 {index + 1}</span>
-                      </div>
-                    </a>
-                  ) : (
-                    <ImagePreview key={index} src={url}>
-                      {/* 这里添加了 unoptimized 属性，解决移动端预览失败问题 */}
-                      <a href={url} target="_blank" rel="noopener noreferrer" className="block w-16 h-16 rounded border-2 border-transparent hover:border-blue-500 overflow-hidden group relative">
-                        <Image 
-                          src={url} 
-                          alt={`发票 ${index+1}`} 
-                          width={64} 
-                          height={64} 
-                          className="w-full h-full object-cover" 
-                          unoptimized 
-                        />
-                      </a>
-                    </ImagePreview>
-                  )
+                  // 2. 使用 FilePreview 包裹，移除原来的 <a> 标签
+                  <FilePreview key={index} src={url}>
+                    <div className="block w-16 h-16 rounded border-2 border-transparent hover:border-blue-500 overflow-hidden group relative bg-white">
+                        {isPdf ? (
+                            <div className="w-full h-full bg-red-50 flex flex-col items-center justify-center text-red-600">
+                                <FaFilePdf className="text-2xl"/>
+                                <span className="text-[10px] mt-1">PDF</span>
+                            </div>
+                        ) : (
+                            <Image 
+                                src={url} 
+                                alt={`发票 ${index+1}`} 
+                                width={64} 
+                                height={64} 
+                                className="w-full h-full object-cover" 
+                                unoptimized 
+                            />
+                        )}
+                    </div>
+                  </FilePreview>
                 );
               })}
             </div>

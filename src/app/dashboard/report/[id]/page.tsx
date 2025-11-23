@@ -1,3 +1,5 @@
+// src/app/dashboard/report/[id]/page.tsx
+
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
@@ -6,8 +8,9 @@ import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import Link from 'next/link';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+// 1. 引入图片压缩库
+import imageCompression from 'browser-image-compression';
 
-// 导入所有子组件和Hooks
 import type { Database } from '@/types/database.types';
 import { useReportData } from '@/hooks/useReportData';
 import { ReportHeader } from '@/components/report/ReportHeader';
@@ -16,8 +19,8 @@ import { ReportMetadataForm } from '@/components/report/ReportMetadataForm';
 import { AddExpenseForm } from '@/components/report/AddExpenseForm';
 import { ExpenseList } from '@/components/report/ExpenseList';
 import { RequestFormPDF } from '@/components/report/RequestFormPDF';
+import { ReimbursementVoucher } from '@/components/report/ReimbursementVoucher';
 
-// 从数据库类型中获取具体类型
 type Report = Database['public']['Tables']['reports']['Row'];
 type Expense = Database['public']['Tables']['expenses']['Row'];
 
@@ -25,37 +28,29 @@ export default function ReportDetailPage() {
     const supabase = createClientComponentClient<Database>();
     const router = useRouter();
     
-    // 1. 从更新后的 Hook 中解构出删除方法和状态
     const { 
         report, setReport, expenses, customers, user, currentUserProfile, 
         loading, error, fetchPageData,
-        deleteReport,   // 新增：来自 Hook 的删除报销单方法
-        deleteExpense,  // 新增：来自 Hook 的删除费用方法
-        isProcessing: hookIsProcessing // 新增：Hook 内部的处理状态（主要是删除操作）
+        deleteReport, deleteExpense, isProcessing: hookIsProcessing 
     } = useReportData();
     
-    // --- 页面级状态 ---
-    // 本地处理状态 (用于提交审批、更新标题等尚未移入 Hook 的操作)
     const [localIsProcessing, setLocalIsProcessing] = useState(false);
-    
-    // 合并后的全局处理状态 (只要有任意一方在处理，就禁用UI)
     const isProcessing = localIsProcessing || hookIsProcessing;
-
-    // 新增：用于替代 alert 的通知状态
     const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
-    // 用于表单编辑的状态
     const [editableTitle, setEditableTitle] = useState('');
     const [reportCustomerName, setReportCustomerName] = useState('');
     const [reportBillToCustomer, setReportBillToCustomer] = useState(false);
     const [invoiceReceived, setInvoiceReceived] = useState(false);
     const [isPaid, setIsPaid] = useState(false);
+    
     const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
     const [editingExpenseData, setEditingExpenseData] = useState<Partial<Expense>>({});
-    const [editingReceiptFiles, setEditingReceiptFiles] = useState<FileList | null>(null);
+    // 2. 修改：使用 File[] 数组来管理新文件
+    const [editingNewFiles, setEditingNewFiles] = useState<File[]>([]);
+    
     const pdfRef = useRef<HTMLDivElement>(null);
 
-    // 当 report 数据加载或更新后，同步本地的编辑状态
     useEffect(() => {
         if (report) {
             setEditableTitle(report.title || '');
@@ -66,7 +61,7 @@ export default function ReportDetailPage() {
         }
     }, [report]);
 
-    // --- 权限控制逻辑 ---
+    // --- 权限逻辑 (保持不变) ---
     const isOwner = user?.id === report?.user_id;
     const isDraft = report?.status === 'draft';
     const canWithdraw = isOwner && ['submitted', 'pending_partner_approval'].includes(report?.status || '');
@@ -78,159 +73,116 @@ export default function ReportDetailPage() {
     );
     const canExportPdf = report?.status === 'approved' && report.bill_to_customer;
 
-    // --- 通知处理函数 ---
     const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
         setNotification({ message, type });
-        setTimeout(() => setNotification(null), 5000); // 5秒后自动消失
+        setTimeout(() => setNotification(null), 5000);
     };
 
-    // --- 事件处理函数 ---
+    // --- 辅助函数：压缩并上传文件 (从 AddExpenseForm 提取而来) ---
+    const compressAndUploadFile = async (file: File): Promise<string> => {
+        const options = {
+            maxSizeMB: 0.8, maxWidthOrHeight: 1920, useWebWorker: true, fileType: 'image/jpeg'
+        };
+        
+        let fileToUpload = file;
+        if (file.type.startsWith('image/')) {
+            try {
+                fileToUpload = await imageCompression(file, options);
+            } catch (err) {
+                console.error("压缩失败，使用原图", err);
+            }
+        }
 
-    const handleExpenseAdded = useCallback(() => { 
-        showNotification('费用条目已成功添加！');
-        fetchPageData(); 
-    }, [fetchPageData]);
+        const presignResponse = await fetch('/api/upload-r2', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileType: fileToUpload.type }),
+        });
+        
+        if (!presignResponse.ok) throw new Error('获取上传凭证失败');
+        const { uploadUrl, accessUrl } = await presignResponse.json();
+        
+        const uploadResponse = await fetch(uploadUrl, { 
+            method: 'PUT', body: fileToUpload, headers: { 'Content-Type': fileToUpload.type }
+        });
+        
+        if (!uploadResponse.ok) throw new Error('上传云存储失败');
+        return accessUrl;
+    };
+
+    // --- Event Handlers ---
+
+    const handlePrint = useCallback(() => { window.print(); }, []);
+    const handleExpenseAdded = useCallback(() => { showNotification('费用添加成功'); fetchPageData(); }, [fetchPageData]);
     
-    // 更新报销单标题
     const handleTitleUpdate = useCallback(async () => {
         if (!report || !editableTitle.trim()) return;
         setLocalIsProcessing(true);
         const { error } = await supabase.from('reports').update({ title: editableTitle.trim() } as any).eq('id', report.id);
-        if (error) {
-            showNotification(`标题更新失败: ${error.message}`, 'error');
-        } else {
-            showNotification('标题已更新。');
-            fetchPageData();
-        }
+        if (error) showNotification(`标题更新失败: ${error.message}`, 'error');
+        else { showNotification('标题已更新'); fetchPageData(); }
         setLocalIsProcessing(false);
     }, [report, editableTitle, supabase, fetchPageData]);
 
-    // 更新客户相关信息
     const handleUpdateReportCustomerInfo = useCallback(async () => {
         if (!report) return;
         setLocalIsProcessing(true);
         const { error } = await supabase.from('reports').update({
-            customer_name: reportCustomerName,
-            bill_to_customer: reportBillToCustomer
+            customer_name: reportCustomerName, bill_to_customer: reportBillToCustomer
         } as any).eq('id', report.id);
-        
-        if (error) {
-            showNotification(`客户信息更新失败: ${error.message}`, 'error');
-        } else {
-            showNotification('客户信息已保存。');
-            fetchPageData();
-        }
+        if (error) showNotification(`更新失败: ${error.message}`, 'error');
+        else { showNotification('客户信息已保存'); fetchPageData(); }
         setLocalIsProcessing(false);
     }, [report, reportCustomerName, reportBillToCustomer, supabase, fetchPageData]);
 
-    // 提交审批
     const handleSubmitForApproval = useCallback(async () => {
-        if (!report || expenses.length === 0) {
-            showNotification('报销单中还没有任何费用条目，无法提交。', 'error');
-            return;
-        }
-        if (!window.confirm('您确定要提交这张报销单进行审批吗？提交后将无法修改。')) {
-            return;
-        }
+        if (!report || expenses.length === 0) return showNotification('无费用条目，无法提交', 'error');
+        if (!window.confirm('确定提交审批吗？提交后无法修改。')) return;
         setLocalIsProcessing(true);
         try {
-            const total_amount = expenses.reduce((sum, exp) => sum + exp.amount, 0);
-            const { data: updatedReport, error: updateError } = await supabase
-                .from('reports')
-                .update({ status: 'submitted', submitted_at: new Date().toISOString(), total_amount: total_amount } as any)
+            const total = expenses.reduce((sum, exp) => sum + exp.amount, 0);
+            const { data, error } = await supabase.from('reports')
+                .update({ status: 'submitted', submitted_at: new Date().toISOString(), total_amount: total } as any)
                 .eq('id', report.id).select().single();
-            
-            if (updateError) throw updateError;
-            setReport(updatedReport); // 立即更新UI
-            showNotification('报销单已成功提交！');
-        } catch (err: unknown) {
-            if (err instanceof Error) {
-                showNotification(`提交失败: ${err.message}`, 'error');
-            } else {
-                showNotification('提交失败: 发生未知错误', 'error');
-            }
-        } finally {
-            setLocalIsProcessing(false);
-        }
+            if (error) throw error;
+            setReport(data); showNotification('已提交审批');
+        } catch (err: any) { showNotification(`提交失败: ${err.message}`, 'error'); } 
+        finally { setLocalIsProcessing(false); }
     }, [report, expenses, supabase, setReport]);
 
-    // 撤回已提交的报销单
     const handleWithdrawReport = useCallback(async () => {
-        if (!report || !user) return;
-        if (!window.confirm('您确定要撤回这张报销单吗？撤回后可以重新编辑。')) {
-            return;
-        }
+        if (!report || !window.confirm('确定撤回吗？')) return;
         setLocalIsProcessing(true);
         const { data, error } = await supabase.from('reports').update({ status: 'draft' } as any).eq('id', report.id).select().single();
-        if (error) {
-            showNotification(`撤回失败: ${error.message}`, 'error');
-        } else {
-            setReport(data);
-            showNotification('报销单已撤回。');
-        }
+        if (error) showNotification(`撤回失败: ${error.message}`, 'error');
+        else { setReport(data); showNotification('报销单已撤回'); }
         setLocalIsProcessing(false);
-    }, [report, user, supabase, setReport]);
+    }, [report, supabase, setReport]);
 
-    // 审批决策 (批准/退回/转交)
     const handleApprovalDecision = useCallback(async (decision: 'approved' | 'send_back' | 'forward_to_partner') => {
-        if (!report || !currentUserProfile) return;
-        
-        let confirmMessage = '';
-        if (decision === 'approved') confirmMessage = '您确定要批准这张报销单吗？';
-        if (decision === 'send_back') confirmMessage = '您确定要将这张报销单退回给提交人修改吗？';
-        if (decision === 'forward_to_partner') confirmMessage = '您确定要将这张报销单转交给合伙人进行最终审批吗？';
-
-        if (!window.confirm(confirmMessage)) return;
-
+        if (!report || !currentUserProfile || !window.confirm('确定执行此操作吗？')) return;
         setLocalIsProcessing(true);
         try {
             let nextStatus = '';
             const updates: Partial<Report> = {};
-
             if (decision === 'approved') {
                 if(currentUserProfile.role === 'manager') {
-                    nextStatus = 'pending_partner_approval';
-                    updates.primary_approver_id = currentUserProfile.id;
-                    updates.primary_approved_at = new Date().toISOString();
+                    nextStatus = 'pending_partner_approval'; updates.primary_approver_id = currentUserProfile.id; updates.primary_approved_at = new Date().toISOString();
                 } else if (currentUserProfile.role === 'partner') {
-                    nextStatus = 'approved';
-                    updates.final_approver_id = currentUserProfile.id;
-                    updates.final_approved_at = new Date().toISOString();
+                    nextStatus = 'approved'; updates.final_approver_id = currentUserProfile.id; updates.final_approved_at = new Date().toISOString();
                 }
-            } else if (decision === 'send_back') {
-                nextStatus = 'draft';
-            } else if (decision === 'forward_to_partner') {
-                nextStatus = 'pending_partner_approval';
-            }
-
+            } else if (decision === 'send_back') nextStatus = 'draft';
+            else if (decision === 'forward_to_partner') nextStatus = 'pending_partner_approval';
             updates.status = nextStatus;
 
-            const { error: approvalError } = await supabase.from('approvals').insert({
-                report_id: report.id,
-                approver_id: currentUserProfile.id,
-                status: decision,
-            } as any);
-            if (approvalError) throw approvalError;
-            
-            const { data, error: reportError } = await supabase.from('reports').update(updates as any).eq('id', report.id).select().single();
-            if (reportError) throw reportError;
-            
-            setReport(data);
-            showNotification('操作成功！');
-            fetchPageData();
-
-        } catch (err: unknown) {
-            if (err instanceof Error) {
-                showNotification(`操作失败: ${err.message}`, 'error');
-            } else {
-                showNotification('操作失败: 发生未知错误', 'error');
-            }
-        } finally {
-            setLocalIsProcessing(false);
-        }
+            await supabase.from('approvals').insert({ report_id: report.id, approver_id: currentUserProfile.id, status: decision } as any);
+            const { data, error } = await supabase.from('reports').update(updates as any).eq('id', report.id).select().single();
+            if (error) throw error;
+            setReport(data); showNotification('操作成功'); fetchPageData();
+        } catch (err: any) { showNotification(`操作失败: ${err.message}`, 'error'); } 
+        finally { setLocalIsProcessing(false); }
     }, [report, currentUserProfile, supabase, setReport, fetchPageData]);
     
-    // 生成PDF
     const handleGeneratePdf = useCallback(async () => {
         if (!pdfRef.current || !report) return;
         setLocalIsProcessing(true);
@@ -239,82 +191,77 @@ export default function ReportDetailPage() {
             const imgData = canvas.toDataURL('image/png');
             const pdf = new jsPDF({ orientation: 'p', unit: 'px', format: [canvas.width, canvas.height] });
             pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
-            pdf.save(`报销单-${report.title || report.id}.pdf`);
-        } catch(err) {
-            showNotification('PDF 生成失败，请重试。', 'error');
-            console.error(err);
-        } finally {
-            setLocalIsProcessing(false);
-        }
+            pdf.save(`报销单-${report.title}.pdf`);
+        } catch(err) { console.error(err); showNotification('PDF生成失败', 'error'); } 
+        finally { setLocalIsProcessing(false); }
     }, [report]);
 
-    // --- 删除相关逻辑已移至 Hook，此处移除 handleDeleteReport 和 handleDeleteExpense ---
-    
-    // 进入费用编辑模式
+    // --- 编辑逻辑 (核心修改) ---
     const handleEditExpense = useCallback((expense: Expense) => {
         setEditingExpenseId(expense.id);
         setEditingExpenseData(expense);
+        setEditingNewFiles([]); // 清空新文件列表
     }, []);
 
-    // 取消编辑
     const handleCancelEdit = useCallback(() => {
         setEditingExpenseId(null);
         setEditingExpenseData({});
-        setEditingReceiptFiles(null);
+        setEditingNewFiles([]);
     }, []);
     
-    // 更新费用条目
+    // 3. 实现真正的更新逻辑 (支持文件)
     const handleUpdateExpense = useCallback(async () => {
         if (!editingExpenseId || !user) return;
-
         setLocalIsProcessing(true);
 
         try {
-            if (editingReceiptFiles && editingReceiptFiles.length > 0) {
-                showNotification('包含文件更新的逻辑比较复杂，此处为简化版。', 'error');
+            // 1. 处理新文件上传
+            const newUploadedUrls: string[] = [];
+            if (editingNewFiles.length > 0) {
+                for (const file of editingNewFiles) {
+                    const url = await compressAndUploadFile(file);
+                    newUploadedUrls.push(url);
+                }
             }
 
-            const { error } = await supabase
-                .from('expenses')
-                .update(editingExpenseData as any)
-                .eq('id', editingExpenseId);
+            // 2. 合并 URL：保留的旧URL + 新上传的URL
+            // 注意：ExpenseList 组件已经通过 setEditingExpenseData 修改了 receipt_urls (移除了被删的旧文件)
+            const finalUrls = [
+                ...(editingExpenseData.receipt_urls || []), 
+                ...newUploadedUrls
+            ];
 
+            // 3. 更新数据库
+            const updates = {
+                ...editingExpenseData,
+                receipt_urls: finalUrls.length > 0 ? finalUrls : null, // 如果空数组则存为 null
+            };
+
+            const { error } = await supabase.from('expenses').update(updates as any).eq('id', editingExpenseId);
             if (error) throw error;
             
-            showNotification('费用条目已更新！');
+            showNotification('费用条目已更新');
             handleCancelEdit();
             fetchPageData();
-
-        } catch (err: unknown) {
-            if (err instanceof Error) {
-                showNotification(`更新失败: ${err.message}`, 'error');
-            } else {
-                showNotification('更新失败: 发生未知错误', 'error');
-            }
+        } catch (err: any) {
+            showNotification(`更新失败: ${err.message}`, 'error');
         } finally {
             setLocalIsProcessing(false);
         }
-    }, [editingExpenseId, user, editingReceiptFiles, editingExpenseData, supabase, fetchPageData, handleCancelEdit]);
+    }, [editingExpenseId, user, editingNewFiles, editingExpenseData, supabase, fetchPageData, handleCancelEdit]);
 
-    // 财务人员更新状态
     const handleAdminStatusUpdate = async () => {
         if (!report) return;
         setLocalIsProcessing(true);
         const updates = { is_invoice_received: invoiceReceived, is_paid: isPaid };
         const { error } = await supabase.from('reports').update(updates as any).eq('id', report.id);
-        if (error) {
-            showNotification('更新财务状态失败: ' + error.message, 'error');
-        } else {
-            showNotification('财务状态已成功更新！');
-            fetchPageData();
-        }
+        if (error) showNotification('状态更新失败', 'error'); else { showNotification('状态已更新'); fetchPageData(); }
         setLocalIsProcessing(false);
     };
 
-    // --- 页面渲染 ---
-    if (loading) return <div className="flex justify-center items-center min-h-screen">正在加载详情...</div>;
-    if (error) return ( <div className="text-center p-4">加载失败: {error} <Link href="/dashboard">返回</Link></div> ); 
-    if (!report || !user || !currentUserProfile) return ( <div className="text-center p-4">未找到报销单或用户数据。</div> );
+    if (loading) return <div className="flex justify-center items-center min-h-screen">加载中...</div>;
+    if (error) return <div className="p-4 text-center">{error} <Link href="/dashboard">返回</Link></div>;
+    if (!report || !user || !currentUserProfile) return <div className="p-4 text-center">无数据</div>;
     
     return (
         <>
@@ -327,19 +274,12 @@ export default function ReportDetailPage() {
                     onTitleChange={setEditableTitle} onTitleUpdate={handleTitleUpdate}
                     onGeneratePdf={handleGeneratePdf} onApprovalDecision={handleApprovalDecision}
                     onWithdraw={handleWithdrawReport} onSubmit={handleSubmitForApproval}
-                    // 2. 修改：直接传递 Hook 中的 deleteReport 函数
-                    onDelete={deleteReport}
+                    onDelete={deleteReport} onPrint={handlePrint}
                 />
                 
                 {notification && (
                     <div className="container mx-auto mt-4 px-6">
-                        <div 
-                            className={`p-4 rounded-md text-sm ${
-                                notification.type === 'success' 
-                                ? 'bg-green-100 text-green-800 border border-green-200' 
-                                : 'bg-red-100 text-red-800 border border-red-200'
-                            }`}
-                        >
+                        <div className={`p-4 rounded-md text-sm ${notification.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
                             {notification.message}
                         </div>
                     </div>
@@ -364,28 +304,20 @@ export default function ReportDetailPage() {
                         <div className={isDraft && isOwner ? "md:col-span-2 space-y-6" : "space-y-6"}>
                              {isAdminView && (
                                 <AdminPanel
-                                    invoiceReceived={invoiceReceived || false}
-                                    onInvoiceReceivedChange={(e) => {
-                                        setInvoiceReceived(e.target.checked);
-                                        if (!e.target.checked) setIsPaid(false);
-                                    }}
-                                    isPaid={isPaid || false}
-                                    onIsPaidChange={(e) => setIsPaid(e.target.checked)}
-                                    canMarkAsPaid={invoiceReceived || false}
-                                    onSave={handleAdminStatusUpdate}
-                                    isProcessing={isProcessing}
+                                    invoiceReceived={invoiceReceived} onInvoiceReceivedChange={(e) => setInvoiceReceived(e.target.checked)}
+                                    isPaid={isPaid} onIsPaidChange={(e) => setIsPaid(e.target.checked)}
+                                    canMarkAsPaid={invoiceReceived} onSave={handleAdminStatusUpdate} isProcessing={isProcessing}
                                 />
                             )}
                             <ExpenseList
-                                report={report} expenses={expenses} isOwner={isOwner}
-                                isDraft={isDraft} isProcessing={isProcessing}
+                                report={report} expenses={expenses} isOwner={isOwner} isDraft={isDraft} isProcessing={isProcessing}
                                 editingExpenseId={editingExpenseId} editingExpenseData={editingExpenseData}
                                 setEditingExpenseData={setEditingExpenseData} onEditExpense={handleEditExpense}
                                 onCancelEdit={handleCancelEdit} onUpdateExpense={handleUpdateExpense}
-                                // 3. 修改：使用 Hook 中的 deleteExpense 函数
                                 onDeleteExpense={(expense) => deleteExpense(expense.id)} 
                                 customers={customers}
-                                editingReceiptFiles={editingReceiptFiles} setEditingReceiptFiles={setEditingReceiptFiles}
+                                // 4. 传递新的文件 props
+                                editingNewFiles={editingNewFiles} setEditingNewFiles={setEditingNewFiles}
                             />
                         </div>
                     </div>
@@ -397,6 +329,7 @@ export default function ReportDetailPage() {
                     <RequestFormPDF report={report} submitterName={report.profiles?.full_name || ''} />
                 </div>
             </div>
+            <ReimbursementVoucher report={report} expenses={expenses} ref={null} />
         </>
     );
 }
