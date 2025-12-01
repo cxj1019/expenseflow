@@ -20,6 +20,8 @@
     "html2canvas": "^1.4.1",
     "jspdf": "^3.0.2",
     "next": "15.3.4",
+    "openai": "^6.9.1",
+    "pdfjs-dist": "^5.4.449",
     "pinyin-pro": "^3.27.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
