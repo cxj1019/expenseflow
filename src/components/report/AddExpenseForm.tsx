@@ -13,7 +13,7 @@ import { toast } from 'sonner';
 import { convertPdfToImage } from '@/utils/pdfHelpers';
 
 type Customer = Database['public']['Tables']['customers']['Row'];
-const EXPENSE_CATEGORIES = ['飞机', '火车', '长途汽车', 'Taxi', '餐饮', '住宿', '办公用品', '客户招待', '员工福利', '其他'];
+const EXPENSE_CATEGORIES = ['飞机', '火车', '长途汽车', 'Taxi', '餐饮', '住宿', '办公用品', '过路费','电信费','快递费','客户招待', '员工福利', '其他'];
 
 interface AddExpenseFormProps {
   reportId: number;
