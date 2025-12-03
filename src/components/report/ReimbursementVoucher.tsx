@@ -18,10 +18,7 @@ export const ReimbursementVoucher = forwardRef<HTMLDivElement, Props>(({ report,
     if (!report) return null;
 
     // --- 1. 数据计算 ---
-    
-    // 💡 调整：竖向空间更大，最少显示 12 行，填满版面
     const MIN_ROWS = 12;
-    
     const emptyRowsCount = Math.max(0, MIN_ROWS - expenses.length);
     const emptyRows = Array(emptyRowsCount).fill(null);
 
@@ -31,15 +28,32 @@ export const ReimbursementVoucher = forwardRef<HTMLDivElement, Props>(({ report,
     const categoryStats = expenses.reduce((acc, item) => {
         const cat = item.category || '其他';
         if (!acc[cat]) acc[cat] = { total: 0, tax: 0 };
+        
+        // 累加该类别的总金额 (含税)
         acc[cat].total += item.amount;
+
+        // 计算税额
         if (item.is_vat_invoice && item.tax_rate) {
-            const netAmount = item.amount / (1 + item.tax_rate / 100);
-            acc[cat].tax += (item.amount - netAmount);
+            let calculationBase = item.amount;
+
+            // ✈️ 飞机票特殊逻辑：扣除民航发展基金 (默认50元) 后再算税
+            // 公式：进项税 = (票价+燃油 - 50) / (1+9%) * 9%
+            if (cat === '飞机') {
+                // 防止金额小于50导致负数（虽然极少见）
+                const AIRPORT_FEE = 50;
+                calculationBase = Math.max(0, item.amount - AIRPORT_FEE);
+            }
+
+            const netAmount = calculationBase / (1 + item.tax_rate / 100);
+            const tax = calculationBase - netAmount;
+            
+            acc[cat].tax += tax;
         }
         return acc;
     }, {} as Record<string, { total: number; tax: number }>);
 
     const totalVAT = Object.values(categoryStats).reduce((sum, stat) => sum + stat.tax, 0);
+    // 不含税金额 = 总金额 - 税额 (数学上等价于：不含税票价 + 50元基金)
     const totalExcludingTax = totalAmount - totalVAT;
 
     const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -47,7 +61,6 @@ export const ReimbursementVoucher = forwardRef<HTMLDivElement, Props>(({ report,
     return (
         <>
             <div id="print-voucher-root" className="hidden" ref={ref}>
-                {/* 💡 调整：宽度改为 max-w-[800px] 适配竖向 A4 */}
                 <div className="p-8 max-w-[800px] mx-auto text-black font-serif bg-white text-sm leading-normal">
                     
                     {/* 标题部分 */}
@@ -77,18 +90,17 @@ export const ReimbursementVoucher = forwardRef<HTMLDivElement, Props>(({ report,
                         </div>
                     </div>
 
-                    {/* 外框包裹表格 */}
+                    {/* 明细表格外框 */}
                     <div className="border-2 border-black border-b-0">
                         <table className="w-full border-collapse text-center table-fixed">
                             
-                            {/* 💡 调整：针对窄版面优化列宽 */}
                             <colgroup>
-                                <col style={{ width: '6%' }} />  {/* 序号 */}
-                                <col style={{ width: '13%' }} /> {/* 日期 */}
-                                <col style={{ width: '20%' }} /> {/* 客户 */}
-                                <col style={{ width: '35%' }} /> {/* 事由 (稍微收窄) */}
-                                <col style={{ width: '6%' }} />  {/* 单据 */}
-                                <col style={{ width: '20%' }} /> {/* 金额 (保证显示) */}
+                                <col style={{ width: '6%' }} />
+                                <col style={{ width: '13%' }} />
+                                <col style={{ width: '20%' }} />
+                                <col style={{ width: '35%' }} />
+                                <col style={{ width: '6%' }} />
+                                <col style={{ width: '20%' }} />
                             </colgroup>
 
                             <thead className="table-header-group">
@@ -105,15 +117,15 @@ export const ReimbursementVoucher = forwardRef<HTMLDivElement, Props>(({ report,
                             <tbody>
                                 {expenses.map((expense, index) => (
                                     <tr key={expense.id} className="h-10 text-sm">
-                                        <td className="border-b border-r border-black">{index + 1}</td>
-                                        <td className="border-b border-r border-black font-mono text-xs whitespace-nowrap">{new Date(expense.expense_date).toLocaleDateString()}</td>
-                                        <td className="border-b border-r border-black text-left px-1 truncate text-xs" title={expense.customer_name || ''}>{expense.customer_name}</td>
-                                        <td className="border-b border-r border-black text-left px-2 py-1 text-xs break-words whitespace-normal leading-tight">
+                                        <td className="border-b border-r border-black align-middle font-bold">{index + 1}</td>
+                                        <td className="border-b border-r border-black font-mono text-xs whitespace-nowrap align-middle">{new Date(expense.expense_date).toLocaleDateString()}</td>
+                                        <td className="border-b border-r border-black text-left px-1 truncate text-xs align-middle" title={expense.customer_name || ''}>{expense.customer_name}</td>
+                                        <td className="border-b border-r border-black text-left px-2 py-1 text-xs break-words whitespace-normal leading-tight align-middle">
                                             <span className="font-bold">[{expense.category}]</span> {expense.description}
                                             {expense.is_vat_invoice && <span className="text-[10px] ml-1 border rounded px-1 border-gray-500 text-gray-600 scale-75 inline-block">专</span>}
                                         </td>
-                                        <td className="border-b border-r border-black">{expense.receipt_urls?.length || 0}</td>
-                                        <td className="border-b border-black text-right px-2 font-mono whitespace-nowrap">{fmt(expense.amount)}</td>
+                                        <td className="border-b border-r border-black align-middle">{expense.receipt_urls?.length || 0}</td>
+                                        <td className="border-b border-black text-right px-2 font-mono whitespace-nowrap align-middle">{fmt(expense.amount)}</td>
                                     </tr>
                                 ))}
                                 
@@ -130,11 +142,11 @@ export const ReimbursementVoucher = forwardRef<HTMLDivElement, Props>(({ report,
 
                                 {/* 合计行 */}
                                 <tr className="h-12 font-bold bg-gray-50 avoid-break">
-                                    <td className="border-b border-r border-black">合计</td>
-                                    <td className="border-b border-r border-black text-left px-4 text-base tracking-widest" colSpan={4}>
+                                    <td className="border-b border-r border-black align-middle">合计</td>
+                                    <td className="border-b border-r border-black text-left px-4 text-base tracking-widest align-middle" colSpan={4}>
                                         ⊗ {digitToChinese(totalAmount)}
                                     </td>
-                                    <td className="border-b border-black text-right px-2 font-mono text-lg whitespace-nowrap">
+                                    <td className="border-b border-black text-right px-2 font-mono text-lg whitespace-nowrap align-middle">
                                         ¥ {fmt(totalAmount)}
                                     </td>
                                 </tr>
@@ -213,10 +225,9 @@ export const ReimbursementVoucher = forwardRef<HTMLDivElement, Props>(({ report,
 
             <style jsx global>{`
                 @media print {
-                    /* 💡 调整：设置为 A4 竖向 */
                     @page { 
                         size: A4 portrait; 
-                        margin: 10mm 10mm; /* 稍微减小左右页边距 */
+                        margin: 10mm 10mm;
                     }
                     html, body { margin: 0; padding: 0; background: white; height: auto; }
                     body > *:not(#print-voucher-root) { display: none !important; }
@@ -229,7 +240,9 @@ export const ReimbursementVoucher = forwardRef<HTMLDivElement, Props>(({ report,
                     }
 
                     thead { display: table-header-group; }
+                    
                     tr { break-inside: avoid; page-break-inside: avoid; }
+                    td, th { vertical-align: middle; }
                     .avoid-break { break-inside: avoid; page-break-inside: avoid; }
                 }
             `}</style>
