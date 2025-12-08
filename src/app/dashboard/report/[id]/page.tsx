@@ -8,7 +8,6 @@ import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import Link from 'next/link';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
-// 1. 引入图片压缩库
 import imageCompression from 'browser-image-compression';
 
 import type { Database } from '@/types/database.types';
@@ -46,7 +45,6 @@ export default function ReportDetailPage() {
     
     const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
     const [editingExpenseData, setEditingExpenseData] = useState<Partial<Expense>>({});
-    // 2. 修改：使用 File[] 数组来管理新文件
     const [editingNewFiles, setEditingNewFiles] = useState<File[]>([]);
     
     const pdfRef = useRef<HTMLDivElement>(null);
@@ -61,16 +59,54 @@ export default function ReportDetailPage() {
         }
     }, [report]);
 
-    // --- 权限逻辑 (保持不变) ---
+    // --- 权限逻辑 (核心修改部分) ---
     const isOwner = user?.id === report?.user_id;
     const isDraft = report?.status === 'draft';
+    
+    // 只有在未完全批准前可以撤回
     const canWithdraw = isOwner && ['submitted', 'pending_partner_approval'].includes(report?.status || '');
+    
     const isAdminView = currentUserProfile?.role === 'admin';
     const isApproverView = currentUserProfile && !isOwner && ['manager', 'partner'].includes(currentUserProfile.role || '');
-    const canApprove = report && isApproverView && (
-        (currentUserProfile?.role === 'manager' && report.status === 'submitted') ||
-        (currentUserProfile?.role === 'partner' && ['submitted', 'pending_partner_approval'].includes(report.status))
+
+    // 获取提交人的角色和部门 (从 report.profiles 关联数据中获取)
+    // @ts-ignore - 假设 useReportData 的查询中包含了 profiles 联表数据
+    const submitterRole = report?.profiles?.role;
+    // @ts-ignore
+    const submitterDept = report?.profiles?.department;
+    
+    const myRole = currentUserProfile?.role;
+    const myDept = currentUserProfile?.department;
+
+    // ✅ 核心：审批按钮显示逻辑
+    const canApprove = report && currentUserProfile && !isOwner && (
+        // 1. 经理审批: 本部门员工 + 已提交状态
+        (
+            myRole === 'manager' && 
+            report.status === 'submitted' && 
+            submitterRole === 'employee' && 
+            submitterDept === myDept
+        ) ||
+        // 2. 合伙人审批
+        (
+            myRole === 'partner' && (
+                // A: 本部门所有下属 (员工或经理) 的待处理单据
+                //    包括 submitted (直接审批) 和 pending_partner_approval (二级审批)
+                (
+                    submitterDept === myDept && 
+                    ['employee', 'manager'].includes(submitterRole) &&
+                    ['submitted', 'pending_partner_approval'].includes(report.status)
+                ) ||
+                // B: 其他部门合伙人的单据
+                (
+                    submitterRole === 'partner' &&
+                    submitterDept !== myDept &&
+                    report.status === 'submitted'
+                )
+            )
+        )
     );
+
     const canExportPdf = report?.status === 'approved' && report.bill_to_customer;
 
     const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
@@ -78,7 +114,7 @@ export default function ReportDetailPage() {
         setTimeout(() => setNotification(null), 5000);
     };
 
-    // --- 辅助函数：压缩并上传文件 (从 AddExpenseForm 提取而来) ---
+    // --- 辅助函数 ---
     const compressAndUploadFile = async (file: File): Promise<string> => {
         const options = {
             maxSizeMB: 0.8, maxWidthOrHeight: 1920, useWebWorker: true, fileType: 'image/jpeg'
@@ -165,14 +201,24 @@ export default function ReportDetailPage() {
         try {
             let nextStatus = '';
             const updates: Partial<Report> = {};
+            
             if (decision === 'approved') {
                 if(currentUserProfile.role === 'manager') {
-                    nextStatus = 'pending_partner_approval'; updates.primary_approver_id = currentUserProfile.id; updates.primary_approved_at = new Date().toISOString();
+                    // 经理批准 -> 进入合伙人审批
+                    nextStatus = 'pending_partner_approval'; 
+                    updates.primary_approver_id = currentUserProfile.id; 
+                    updates.primary_approved_at = new Date().toISOString();
                 } else if (currentUserProfile.role === 'partner') {
-                    nextStatus = 'approved'; updates.final_approver_id = currentUserProfile.id; updates.final_approved_at = new Date().toISOString();
+                    // 合伙人批准 -> 终审通过 (无论是批经理、批员工还是批合伙人)
+                    nextStatus = 'approved'; 
+                    updates.final_approver_id = currentUserProfile.id; 
+                    updates.final_approved_at = new Date().toISOString();
                 }
-            } else if (decision === 'send_back') nextStatus = 'draft';
-            else if (decision === 'forward_to_partner') nextStatus = 'pending_partner_approval';
+            } else if (decision === 'send_back') {
+                nextStatus = 'draft';
+            } else if (decision === 'forward_to_partner') {
+                nextStatus = 'pending_partner_approval';
+            }
             updates.status = nextStatus;
 
             await supabase.from('approvals').insert({ report_id: report.id, approver_id: currentUserProfile.id, status: decision } as any);
@@ -196,11 +242,11 @@ export default function ReportDetailPage() {
         finally { setLocalIsProcessing(false); }
     }, [report]);
 
-    // --- 编辑逻辑 (核心修改) ---
+    // --- 编辑逻辑 ---
     const handleEditExpense = useCallback((expense: Expense) => {
         setEditingExpenseId(expense.id);
         setEditingExpenseData(expense);
-        setEditingNewFiles([]); // 清空新文件列表
+        setEditingNewFiles([]);
     }, []);
 
     const handleCancelEdit = useCallback(() => {
@@ -209,13 +255,11 @@ export default function ReportDetailPage() {
         setEditingNewFiles([]);
     }, []);
     
-    // 3. 实现真正的更新逻辑 (支持文件)
     const handleUpdateExpense = useCallback(async () => {
         if (!editingExpenseId || !user) return;
         setLocalIsProcessing(true);
 
         try {
-            // 1. 处理新文件上传
             const newUploadedUrls: string[] = [];
             if (editingNewFiles.length > 0) {
                 for (const file of editingNewFiles) {
@@ -224,17 +268,14 @@ export default function ReportDetailPage() {
                 }
             }
 
-            // 2. 合并 URL：保留的旧URL + 新上传的URL
-            // 注意：ExpenseList 组件已经通过 setEditingExpenseData 修改了 receipt_urls (移除了被删的旧文件)
             const finalUrls = [
                 ...(editingExpenseData.receipt_urls || []), 
                 ...newUploadedUrls
             ];
 
-            // 3. 更新数据库
             const updates = {
                 ...editingExpenseData,
-                receipt_urls: finalUrls.length > 0 ? finalUrls : null, // 如果空数组则存为 null
+                receipt_urls: finalUrls.length > 0 ? finalUrls : null,
             };
 
             const { error } = await supabase.from('expenses').update(updates as any).eq('id', editingExpenseId);
@@ -316,7 +357,6 @@ export default function ReportDetailPage() {
                                 onCancelEdit={handleCancelEdit} onUpdateExpense={handleUpdateExpense}
                                 onDeleteExpense={(expense) => deleteExpense(expense.id)} 
                                 customers={customers}
-                                // 4. 传递新的文件 props
                                 editingNewFiles={editingNewFiles} setEditingNewFiles={setEditingNewFiles}
                             />
                         </div>

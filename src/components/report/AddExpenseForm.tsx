@@ -37,6 +37,9 @@ export const AddExpenseForm = ({ reportId, user, customers, onExpenseAdded }: Ad
   const [taxRate, setTaxRate] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
   
+  // ✅ 新增：控制是否启用 AI 识别的状态，默认为 true
+  const [isAIEnabled, setIsAIEnabled] = useState(true);
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
@@ -66,7 +69,10 @@ export const AddExpenseForm = ({ reportId, user, customers, onExpenseAdded }: Ad
       const rawFiles = Array.from(e.target.files);
       const newFilesWithPreview: FileWithPreview[] = [];
 
-      setIsAnalyzing(true);
+      // ✅ 修改：只有开启 AI 时才显示 "正在分析" 的状态，否则只显示 "处理文件"
+      if (isAIEnabled) {
+          setIsAnalyzing(true);
+      }
       setUploadStatus('正在处理文件...');
 
       try {
@@ -99,7 +105,7 @@ export const AddExpenseForm = ({ reportId, user, customers, onExpenseAdded }: Ad
             // @ts-ignore
             file.preview = previewUrl; 
             // @ts-ignore
-            file.convertedBlob = previewFile; // 暂存转换后的 Blob (如果是PDF，这里是转换后的图片；如果是图片，这里是压缩后的图片)
+            file.convertedBlob = previewFile; // 暂存转换后的 Blob
             
             newFilesWithPreview.push(file as FileWithPreview);
         }
@@ -112,8 +118,9 @@ export const AddExpenseForm = ({ reportId, user, customers, onExpenseAdded }: Ad
             // @ts-ignore
             const blobToAnalyze = firstFile.convertedBlob || firstFile;
             
-            // 只有当它是图片（或PDF转换后的图片）时才分析
-            if (blobToAnalyze instanceof Blob) {
+            // ✅ 修改：增加了 isAIEnabled 的判断条件
+            // 只有当开关开启，且文件有效时，才触发 AI 分析
+            if (isAIEnabled && blobToAnalyze instanceof Blob) {
                 await triggerAIAnalysis(blobToAnalyze);
             }
         }
@@ -337,7 +344,28 @@ export const AddExpenseForm = ({ reportId, user, customers, onExpenseAdded }: Ad
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">发票凭证</label>
+            {/* ✅ 修改：发票凭证区域标题栏，加入 AI 开关 */}
+            <div className="flex justify-between items-center mb-2">
+                <label className="block text-sm font-medium text-gray-700">发票凭证</label>
+                
+                <div 
+                    className={`flex items-center px-2 py-1 rounded border cursor-pointer transition-colors ${isAIEnabled ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200'}`}
+                    onClick={() => setIsAIEnabled(!isAIEnabled)}
+                >
+                    <input 
+                        type="checkbox" 
+                        id="ai-toggle"
+                        checked={isAIEnabled} 
+                        onChange={(e) => setIsAIEnabled(e.target.checked)}
+                        className="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <label htmlFor="ai-toggle" className={`ml-2 text-xs font-medium cursor-pointer flex items-center gap-1 ${isAIEnabled ? 'text-blue-700' : 'text-gray-500'}`}>
+                        <FaMagic className={isAIEnabled ? "text-blue-600" : "text-gray-400"} />
+                        AI 自动识别
+                    </label>
+                </div>
+            </div>
+
           <div className="grid grid-cols-2 gap-4 mb-3">
              <button type="button" onClick={() => cameraInputRef.current?.click()} className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-blue-300 bg-blue-50 rounded-lg text-blue-600 hover:bg-blue-100 transition-colors active:scale-95">
                 <FaCamera className="text-2xl mb-1" />
@@ -352,7 +380,7 @@ export const AddExpenseForm = ({ reportId, user, customers, onExpenseAdded }: Ad
           <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFileChange} />
           <input type="file" ref={fileInputRef} accept="image/*,application/pdf" multiple style={{ display: 'none' }} onChange={handleFileChange} />
 
-          {/* 预览区域 (移除了大图调试预览) */}
+          {/* 预览区域 */}
           {receiptFiles.length > 0 && (
             <div className="flex flex-wrap gap-2 mt-2">
               {receiptFiles.map((file, index) => (
