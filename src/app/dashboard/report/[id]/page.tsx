@@ -91,7 +91,6 @@ export default function ReportDetailPage() {
 
     const canExportPdf = report?.status === 'approved' && report.bill_to_customer;
 
-    // ✅ 修复：延长错误提示显示时间 (错误10秒，成功3秒)
     const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
         setNotification({ message, type });
         const duration = type === 'error' ? 10000 : 3000;
@@ -151,10 +150,20 @@ export default function ReportDetailPage() {
         finally { setLocalIsProcessing(false); }
     }, [report, expenses, supabase, setReport]);
 
+    // ✅【已修复】撤回时同时清空提交时间和审批信息
     const handleWithdrawReport = useCallback(async () => {
         if (!report || !window.confirm('确定撤回吗？')) return;
         setLocalIsProcessing(true);
-        const { data, error } = await supabase.from('reports').update({ status: 'draft' } as any).eq('id', report.id).select().single();
+        
+        const { data, error } = await supabase.from('reports').update({ 
+            status: 'draft',
+            submitted_at: null,          // 清空提交时间
+            primary_approved_at: null,   // 清空一级审批时间
+            final_approved_at: null,     // 清空二级审批时间
+            primary_approver_id: null,   // 清空一级审批人
+            final_approver_id: null      // 清空二级审批人
+        } as any).eq('id', report.id).select().single();
+
         if (error) showNotification(`撤回失败: ${error.message}`, 'error');
         else { setReport(data); showNotification('报销单已撤回'); }
         setLocalIsProcessing(false);
@@ -183,7 +192,6 @@ export default function ReportDetailPage() {
         finally { setLocalIsProcessing(false); }
     }, [report, currentUserProfile, supabase, setReport, fetchPageData]);
     
-    // ✅ 修复：PDF 导出逻辑 (关键修正)
     const handleGeneratePdf = useCallback(async () => {
         if (!pdfRef.current || !report) {
             console.error("PDF生成失败: 元素未挂载或数据缺失");
@@ -197,7 +205,7 @@ export default function ReportDetailPage() {
                 scale: 2, 
                 useCORS: true, 
                 logging: false, 
-                allowTaint: false, // 必须为 false，否则 toDataURL 会报错
+                allowTaint: false, 
                 backgroundColor: '#ffffff' 
             });
             console.log("Canvas 生成成功，转换为图片...");
@@ -307,10 +315,8 @@ export default function ReportDetailPage() {
                 </main>
             </div>
             
-            {/* ✅ 修复：CSS改用 absolute，避免 fixed 导致的渲染问题 */}
             <div style={{ position: 'absolute', top: 0, left: '-9999px', width: '210mm', overflow: 'hidden' }}>
                  <div ref={pdfRef}>
-                    {/* ✅ 传递 expenses 用于计算税额 */}
                     <RequestFormPDF 
                         report={report} 
                         expenses={expenses || []} 

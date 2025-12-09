@@ -1,3 +1,5 @@
+// src/app/dashboard/page.tsx
+
 'use client'
 
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
@@ -131,12 +133,21 @@ export default function Dashboard() {
           </div>
           
           <div className="flex items-center gap-2 md:gap-4 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
+            {/* 1. 审批入口：仅经理和合伙人可见 */}
             {profile && ['manager', 'partner'].includes(profile.role) && (
               <Link href="/approval" className="whitespace-nowrap px-3 py-1.5 text-sm text-white bg-purple-600 rounded-md hover:bg-purple-700">审批</Link>
             )}
+
+            {/* 2. ✅ 新增：数据分析入口：经理、合伙人和管理员可见 */}
+            {profile && ['manager', 'partner', 'admin'].includes(profile.role) && (
+              <Link href="/analytics" className="whitespace-nowrap px-3 py-1.5 text-sm text-white bg-indigo-600 rounded-md hover:bg-indigo-700">分析</Link>
+            )}
+
+            {/* 3. 财务入口：仅管理员可见 */}
             {profile && profile.role === 'admin' && (
               <Link href="/finance" className="whitespace-nowrap px-3 py-1.5 text-sm text-white bg-green-600 rounded-md hover:bg-green-700">财务</Link>
             )}
+            
             <span className="hidden md:inline text-sm text-gray-600">{profile?.full_name}</span>
             <button onClick={handleLogout} className="whitespace-nowrap px-3 py-1.5 text-sm text-white bg-gray-500 rounded-md hover:bg-gray-600">退出</button>
           </div>

@@ -1,4 +1,4 @@
-//src\app\analytics\page.tsx
+// src/app/analytics/page.tsx
 
 'use client'
 
@@ -18,11 +18,11 @@ type ExpenseWithDetails = Database['public']['Tables']['expenses']['Row'] & {
     title: string | null
     submitted_at: string | null
     customer_name: string | null
-    bill_to_customer: boolean | null
+    bill_to_customer: boolean | null // 确保包含此字段
     primary_approved_at: string | null
     final_approved_at: string | null
-    primary_approver: Pick<Profile, 'full_name'> | null // 一级审批人
-    final_approver: Pick<Profile, 'full_name'> | null   // 二级审批人
+    primary_approver: Pick<Profile, 'full_name'> | null
+    final_approver: Pick<Profile, 'full_name'> | null
   } | null
 }
 
@@ -55,7 +55,6 @@ export default function AnalyticsPage() {
 
   const handleFetchData = async () => {
     setIsFetching(true);
-    // 【已修正】更正了 final_approver 的外键名称
     let query = supabase
       .from('expenses')
       .select(`
@@ -177,6 +176,7 @@ export default function AnalyticsPage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金额</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">员工</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">客户</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">是否请款</th> {/* 新增列头 */}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">报销单名称</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">提交日期</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">一级审批时间</th>
@@ -193,6 +193,18 @@ export default function AnalyticsPage() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-mono">¥{exp.amount?.toFixed(2)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.profiles?.full_name}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.customer_name || '-'}</td>
+                    {/* 新增列内容：使用颜色区分是/否 */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      {exp.reports?.bill_to_customer ? (
+                        <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
+                          是
+                        </span>
+                      ) : (
+                        <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
+                          否
+                        </span>
+                      )}
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.title}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.submitted_at ? new Date(exp.reports.submitted_at).toLocaleDateString() : '-'}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{exp.reports?.primary_approved_at ? new Date(exp.reports.primary_approved_at).toLocaleDateString() : '-'}</td>
@@ -210,4 +222,3 @@ export default function AnalyticsPage() {
     </div>
   )
 }
-
