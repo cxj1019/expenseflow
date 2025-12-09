@@ -20,7 +20,15 @@ import { ExpenseList } from '@/components/report/ExpenseList';
 import { RequestFormPDF } from '@/components/report/RequestFormPDF';
 import { ReimbursementVoucher } from '@/components/report/ReimbursementVoucher';
 
-type Report = Database['public']['Tables']['reports']['Row'];
+// 定义包含 Profile 信息的扩展报表类型
+type ReportWithProfile = Database['public']['Tables']['reports']['Row'] & {
+  profiles: {
+    full_name: string | null;
+    department: string | null;
+    role: string | null;
+  } | null;
+};
+
 type Expense = Database['public']['Tables']['expenses']['Row'];
 
 export default function ReportDetailPage() {
@@ -49,6 +57,8 @@ export default function ReportDetailPage() {
     
     const pdfRef = useRef<HTMLDivElement>(null);
 
+    const fullReport = report as unknown as ReportWithProfile | null;
+
     useEffect(() => {
         if (report) {
             setEditableTitle(report.title || '');
@@ -59,95 +69,52 @@ export default function ReportDetailPage() {
         }
     }, [report]);
 
-    // --- 权限逻辑 (核心修改部分) ---
+    // --- 权限逻辑 ---
     const isOwner = user?.id === report?.user_id;
     const isDraft = report?.status === 'draft';
-    
-    // 只有在未完全批准前可以撤回
     const canWithdraw = isOwner && ['submitted', 'pending_partner_approval'].includes(report?.status || '');
-    
     const isAdminView = currentUserProfile?.role === 'admin';
     const isApproverView = currentUserProfile && !isOwner && ['manager', 'partner'].includes(currentUserProfile.role || '');
 
-    // 获取提交人的角色和部门 (从 report.profiles 关联数据中获取)
-    // @ts-ignore - 假设 useReportData 的查询中包含了 profiles 联表数据
-    const submitterRole = report?.profiles?.role;
-    // @ts-ignore
-    const submitterDept = report?.profiles?.department;
-    
+    const submitterRole = fullReport?.profiles?.role;
+    const submitterDept = fullReport?.profiles?.department;
     const myRole = currentUserProfile?.role;
     const myDept = currentUserProfile?.department;
 
-    // ✅ 核心：审批按钮显示逻辑
     const canApprove = report && currentUserProfile && !isOwner && (
-        // 1. 经理审批: 本部门员工 + 已提交状态
-        (
-            myRole === 'manager' && 
-            report.status === 'submitted' && 
-            submitterRole === 'employee' && 
-            submitterDept === myDept
-        ) ||
-        // 2. 合伙人审批
-        (
-            myRole === 'partner' && (
-                // A: 本部门所有下属 (员工或经理) 的待处理单据
-                //    包括 submitted (直接审批) 和 pending_partner_approval (二级审批)
-                (
-                    submitterDept === myDept && 
-                    ['employee', 'manager'].includes(submitterRole) &&
-                    ['submitted', 'pending_partner_approval'].includes(report.status)
-                ) ||
-                // B: 其他部门合伙人的单据
-                (
-                    submitterRole === 'partner' &&
-                    submitterDept !== myDept &&
-                    report.status === 'submitted'
-                )
-            )
-        )
+        (myRole === 'manager' && report.status === 'submitted' && submitterRole === 'employee' && submitterDept === myDept) ||
+        (myRole === 'partner' && (
+            (submitterDept === myDept && ['employee', 'manager'].includes(submitterRole || '') && ['submitted', 'pending_partner_approval'].includes(report.status)) ||
+            (submitterRole === 'partner' && submitterDept !== myDept && report.status === 'submitted')
+        ))
     );
 
     const canExportPdf = report?.status === 'approved' && report.bill_to_customer;
 
+    // ✅ 修复：延长错误提示显示时间 (错误10秒，成功3秒)
     const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
         setNotification({ message, type });
-        setTimeout(() => setNotification(null), 5000);
+        const duration = type === 'error' ? 10000 : 3000;
+        setTimeout(() => setNotification(null), duration);
     };
 
-    // --- 辅助函数 ---
     const compressAndUploadFile = async (file: File): Promise<string> => {
-        const options = {
-            maxSizeMB: 0.8, maxWidthOrHeight: 1920, useWebWorker: true, fileType: 'image/jpeg'
-        };
-        
+        const options = { maxSizeMB: 0.8, maxWidthOrHeight: 1920, useWebWorker: true, fileType: 'image/jpeg' };
         let fileToUpload = file;
         if (file.type.startsWith('image/')) {
-            try {
-                fileToUpload = await imageCompression(file, options);
-            } catch (err) {
-                console.error("压缩失败，使用原图", err);
-            }
+            try { fileToUpload = await imageCompression(file, options); } catch (e) {}
         }
-
-        const presignResponse = await fetch('/api/upload-r2', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fileType: fileToUpload.type }),
+        const presignRes = await fetch('/api/upload-r2', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileType: fileToUpload.type }),
         });
-        
-        if (!presignResponse.ok) throw new Error('获取上传凭证失败');
-        const { uploadUrl, accessUrl } = await presignResponse.json();
-        
-        const uploadResponse = await fetch(uploadUrl, { 
-            method: 'PUT', body: fileToUpload, headers: { 'Content-Type': fileToUpload.type }
-        });
-        
-        if (!uploadResponse.ok) throw new Error('上传云存储失败');
+        if (!presignRes.ok) throw new Error('获取上传凭证失败');
+        const { uploadUrl, accessUrl } = await presignRes.json();
+        const uploadRes = await fetch(uploadUrl, { method: 'PUT', body: fileToUpload, headers: { 'Content-Type': fileToUpload.type } });
+        if (!uploadRes.ok) throw new Error('上传云存储失败');
         return accessUrl;
     };
 
     // --- Event Handlers ---
-
     const handlePrint = useCallback(() => { window.print(); }, []);
     const handleExpenseAdded = useCallback(() => { showNotification('费用添加成功'); fetchPageData(); }, [fetchPageData]);
     
@@ -177,9 +144,7 @@ export default function ReportDetailPage() {
         setLocalIsProcessing(true);
         try {
             const total = expenses.reduce((sum, exp) => sum + exp.amount, 0);
-            const { data, error } = await supabase.from('reports')
-                .update({ status: 'submitted', submitted_at: new Date().toISOString(), total_amount: total } as any)
-                .eq('id', report.id).select().single();
+            const { data, error } = await supabase.from('reports').update({ status: 'submitted', submitted_at: new Date().toISOString(), total_amount: total } as any).eq('id', report.id).select().single();
             if (error) throw error;
             setReport(data); showNotification('已提交审批');
         } catch (err: any) { showNotification(`提交失败: ${err.message}`, 'error'); } 
@@ -200,27 +165,16 @@ export default function ReportDetailPage() {
         setLocalIsProcessing(true);
         try {
             let nextStatus = '';
-            const updates: Partial<Report> = {};
-            
+            const updates: Partial<Database['public']['Tables']['reports']['Row']> = {};
             if (decision === 'approved') {
                 if(currentUserProfile.role === 'manager') {
-                    // 经理批准 -> 进入合伙人审批
-                    nextStatus = 'pending_partner_approval'; 
-                    updates.primary_approver_id = currentUserProfile.id; 
-                    updates.primary_approved_at = new Date().toISOString();
+                    nextStatus = 'pending_partner_approval'; updates.primary_approver_id = currentUserProfile.id; updates.primary_approved_at = new Date().toISOString();
                 } else if (currentUserProfile.role === 'partner') {
-                    // 合伙人批准 -> 终审通过 (无论是批经理、批员工还是批合伙人)
-                    nextStatus = 'approved'; 
-                    updates.final_approver_id = currentUserProfile.id; 
-                    updates.final_approved_at = new Date().toISOString();
+                    nextStatus = 'approved'; updates.final_approver_id = currentUserProfile.id; updates.final_approved_at = new Date().toISOString();
                 }
-            } else if (decision === 'send_back') {
-                nextStatus = 'draft';
-            } else if (decision === 'forward_to_partner') {
-                nextStatus = 'pending_partner_approval';
-            }
+            } else if (decision === 'send_back') nextStatus = 'draft';
+            else if (decision === 'forward_to_partner') nextStatus = 'pending_partner_approval';
             updates.status = nextStatus;
-
             await supabase.from('approvals').insert({ report_id: report.id, approver_id: currentUserProfile.id, status: decision } as any);
             const { data, error } = await supabase.from('reports').update(updates as any).eq('id', report.id).select().single();
             if (error) throw error;
@@ -229,66 +183,55 @@ export default function ReportDetailPage() {
         finally { setLocalIsProcessing(false); }
     }, [report, currentUserProfile, supabase, setReport, fetchPageData]);
     
+    // ✅ 修复：PDF 导出逻辑 (关键修正)
     const handleGeneratePdf = useCallback(async () => {
-        if (!pdfRef.current || !report) return;
+        if (!pdfRef.current || !report) {
+            console.error("PDF生成失败: 元素未挂载或数据缺失");
+            showNotification("PDF生成失败: 页面元素未就绪", 'error');
+            return;
+        }
         setLocalIsProcessing(true);
         try {
-            const canvas = await html2canvas(pdfRef.current, { scale: 2, useCORS: true });
+            console.log("开始生成 PDF...");
+            const canvas = await html2canvas(pdfRef.current, { 
+                scale: 2, 
+                useCORS: true, 
+                logging: false, 
+                allowTaint: false, // 必须为 false，否则 toDataURL 会报错
+                backgroundColor: '#ffffff' 
+            });
+            console.log("Canvas 生成成功，转换为图片...");
             const imgData = canvas.toDataURL('image/png');
             const pdf = new jsPDF({ orientation: 'p', unit: 'px', format: [canvas.width, canvas.height] });
             pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
             pdf.save(`报销单-${report.title}.pdf`);
-        } catch(err) { console.error(err); showNotification('PDF生成失败', 'error'); } 
+            showNotification("PDF 导出成功");
+        } catch(err: any) { 
+            console.error("PDF生成异常:", err); 
+            showNotification(`PDF生成失败: ${err.message || '未知错误'}`, 'error'); 
+        } 
         finally { setLocalIsProcessing(false); }
     }, [report]);
 
-    // --- 编辑逻辑 ---
     const handleEditExpense = useCallback((expense: Expense) => {
-        setEditingExpenseId(expense.id);
-        setEditingExpenseData(expense);
-        setEditingNewFiles([]);
+        setEditingExpenseId(expense.id); setEditingExpenseData(expense); setEditingNewFiles([]);
     }, []);
-
     const handleCancelEdit = useCallback(() => {
-        setEditingExpenseId(null);
-        setEditingExpenseData({});
-        setEditingNewFiles([]);
+        setEditingExpenseId(null); setEditingExpenseData({}); setEditingNewFiles([]);
     }, []);
-    
     const handleUpdateExpense = useCallback(async () => {
         if (!editingExpenseId || !user) return;
         setLocalIsProcessing(true);
-
         try {
             const newUploadedUrls: string[] = [];
-            if (editingNewFiles.length > 0) {
-                for (const file of editingNewFiles) {
-                    const url = await compressAndUploadFile(file);
-                    newUploadedUrls.push(url);
-                }
-            }
-
-            const finalUrls = [
-                ...(editingExpenseData.receipt_urls || []), 
-                ...newUploadedUrls
-            ];
-
-            const updates = {
-                ...editingExpenseData,
-                receipt_urls: finalUrls.length > 0 ? finalUrls : null,
-            };
-
+            for (const file of editingNewFiles) { newUploadedUrls.push(await compressAndUploadFile(file)); }
+            const finalUrls = [...(editingExpenseData.receipt_urls || []), ...newUploadedUrls];
+            const updates = { ...editingExpenseData, receipt_urls: finalUrls.length > 0 ? finalUrls : null };
             const { error } = await supabase.from('expenses').update(updates as any).eq('id', editingExpenseId);
             if (error) throw error;
-            
-            showNotification('费用条目已更新');
-            handleCancelEdit();
-            fetchPageData();
-        } catch (err: any) {
-            showNotification(`更新失败: ${err.message}`, 'error');
-        } finally {
-            setLocalIsProcessing(false);
-        }
+            showNotification('费用条目已更新'); handleCancelEdit(); fetchPageData();
+        } catch (err: any) { showNotification(`更新失败: ${err.message}`, 'error'); } 
+        finally { setLocalIsProcessing(false); }
     }, [editingExpenseId, user, editingNewFiles, editingExpenseData, supabase, fetchPageData, handleCancelEdit]);
 
     const handleAdminStatusUpdate = async () => {
@@ -319,8 +262,8 @@ export default function ReportDetailPage() {
                 />
                 
                 {notification && (
-                    <div className="container mx-auto mt-4 px-6">
-                        <div className={`p-4 rounded-md text-sm ${notification.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                    <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-[100] px-6">
+                        <div className={`p-4 rounded-md text-sm shadow-lg border ${notification.type === 'success' ? 'bg-green-100 text-green-800 border-green-200' : 'bg-red-100 text-red-800 border-red-200'}`}>
                             {notification.message}
                         </div>
                     </div>
@@ -364,9 +307,15 @@ export default function ReportDetailPage() {
                 </main>
             </div>
             
-            <div className="absolute top-0 -left-[9999px] -z-10">
+            {/* ✅ 修复：CSS改用 absolute，避免 fixed 导致的渲染问题 */}
+            <div style={{ position: 'absolute', top: 0, left: '-9999px', width: '210mm', overflow: 'hidden' }}>
                  <div ref={pdfRef}>
-                    <RequestFormPDF report={report} submitterName={report.profiles?.full_name || ''} />
+                    {/* ✅ 传递 expenses 用于计算税额 */}
+                    <RequestFormPDF 
+                        report={report} 
+                        expenses={expenses || []} 
+                        submitterName={fullReport?.profiles?.full_name || user?.email || ''} 
+                    />
                 </div>
             </div>
             <ReimbursementVoucher report={report} expenses={expenses} ref={null} />
