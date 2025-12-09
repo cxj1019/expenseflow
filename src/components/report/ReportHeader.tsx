@@ -3,36 +3,39 @@
 'use client';
 
 import Link from 'next/link';
-import { FaPrint } from 'react-icons/fa'; // 1. 引入打印图标
+import { FaPrint } from 'react-icons/fa';
 import type { Database } from '@/types/database.types';
 import type { ReportWithRelations } from '@/hooks/useReportData';
 
-// Profile 类型需要从全局 Database 类型中获取
 type Profile = Database['public']['Tables']['profiles']['Row'];
 
-// 一个内部辅助组件，用于渲染不同颜色的状态徽章
-const StatusBadge = ({ text, type }: { text: string | undefined, type: 'status' | 'financial' | 'default' }) => {
-    const baseClasses = "px-2 py-0.5 text-xs font-semibold rounded-full";
+// 1. 更新 StatusBadge，增加 'client' 类型支持
+const StatusBadge = ({ text, type }: { text: string | undefined, type: 'status' | 'financial' | 'client' | 'default' }) => {
+    const baseClasses = "px-2 py-0.5 text-xs font-semibold rounded-full border"; // 增加 border 让标签更精致
     let typeClasses = "";
 
     if (type === 'status') {
         switch (text) {
-            case 'draft': typeClasses = 'bg-gray-200 text-gray-800'; break;
-            case 'submitted': typeClasses = 'bg-yellow-100 text-yellow-800'; break;
-            case 'pending_partner_approval': typeClasses = 'bg-purple-100 text-purple-800'; break;
-            case 'approved': typeClasses = 'bg-green-100 text-green-800'; break;
-            default: typeClasses = 'bg-gray-100 text-gray-800';
+            case 'draft': typeClasses = 'bg-gray-100 text-gray-700 border-gray-200'; break;
+            case 'submitted': typeClasses = 'bg-yellow-50 text-yellow-700 border-yellow-200'; break;
+            case 'pending_partner_approval': typeClasses = 'bg-purple-50 text-purple-700 border-purple-200'; break;
+            case 'approved': typeClasses = 'bg-green-50 text-green-700 border-green-200'; break;
+            default: typeClasses = 'bg-gray-100 text-gray-700 border-gray-200';
         }
     } else if (type === 'financial') {
-        typeClasses = text?.includes('已') ? 'bg-blue-100 text-blue-800' : 'bg-gray-200 text-gray-800';
+        typeClasses = text?.includes('已') 
+            ? 'bg-blue-50 text-blue-700 border-blue-200' 
+            : 'bg-gray-100 text-gray-500 border-gray-200';
+    } else if (type === 'client') {
+        // ✅ 新增：客户请款标签样式 (靛蓝色)
+        typeClasses = 'bg-indigo-50 text-indigo-700 border-indigo-200';
     } else {
-        typeClasses = 'bg-gray-100 text-gray-800';
+        typeClasses = 'bg-gray-100 text-gray-800 border-gray-200';
     }
 
     return <span className={`${baseClasses} ${typeClasses}`}>{text}</span>;
 }
 
-// 定义组件接收的所有 Props
 interface ReportHeaderProps {
     report: ReportWithRelations | null;
     currentUserProfile: Profile | null;
@@ -48,7 +51,6 @@ interface ReportHeaderProps {
     onTitleChange: (newTitle: string) => void;
     onTitleUpdate: () => void;
     onGeneratePdf: () => void;
-    // 2. 新增打印回调
     onPrint?: () => void;
     onApprovalDecision: (decision: 'approved' | 'send_back' | 'forward_to_partner') => void;
     onWithdraw: () => void;
@@ -71,7 +73,7 @@ export const ReportHeader = ({
     onTitleChange,
     onTitleUpdate,
     onGeneratePdf,
-    onPrint, // 解构出 onPrint
+    onPrint,
     onApprovalDecision,
     onWithdraw,
     onSubmit,
@@ -93,7 +95,6 @@ export const ReportHeader = ({
         );
     }
 
-    // 根据角色确定返回链接
     let backLinkHref = "/dashboard";
     let backLinkText = "返回仪表盘";
     if (isAdminView) {
@@ -107,7 +108,6 @@ export const ReportHeader = ({
     return (
         <header className="bg-white shadow-sm">
             <div className="container mx-auto px-6 py-4 flex justify-between items-start flex-wrap gap-4">
-                {/* 左侧：标题和元数据 */}
                 <div className="flex-grow min-w-[300px]">
                     <Link href={backLinkHref} className="text-sm text-blue-600 hover:underline">
                         &larr; {backLinkText}
@@ -130,10 +130,21 @@ export const ReportHeader = ({
                     )}
 
                     <div className="text-gray-500 mt-3 space-y-2 text-sm">
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                             <span>状态: <StatusBadge text={report.status} type="status" /></span>
+                            
+                            {/* ✅ 2. 新增：显示客户请款标记 */}
+                            {report.bill_to_customer && (
+                                <StatusBadge 
+                                    text={`向客户请款: ${report.customer_name || '未填写'}`} 
+                                    type="client" 
+                                />
+                            )}
+                            
+                            <span className="text-gray-300">|</span>
                             <span>提交人: <span className="font-semibold text-gray-700">{report.profiles?.full_name || 'N/A'}</span></span>
                         </div>
+                        
                         {report.primary_approver_id && (
                             <p>一级审批: <span className="font-semibold text-gray-700">{report.primary_approver?.full_name}</span> 于 {new Date(report.primary_approved_at!).toLocaleString()}</p>
                         )}
@@ -149,9 +160,7 @@ export const ReportHeader = ({
                     </div>
                 </div>
 
-                {/* 右侧：操作按钮 */}
                 <div className="flex items-start space-x-2 flex-wrap gap-y-2 pt-2">
-                    {/* 3. 新增：打印凭单按钮 */}
                     <button 
                         onClick={onPrint}
                         className="flex items-center gap-1 px-4 py-2 font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
